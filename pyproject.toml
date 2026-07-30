@@ -1,0 +1,31 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "artisan-forge"
+version = "1.0.0"
+description = "Automation engine for digital product creators: calendar PDFs, AI art, mockups and Etsy-ready assets."
+requires-python = ">=3.11"
+readme = "README.md"
+dependencies = [
+    "reportlab>=4.1",
+    "pillow>=10.3",
+    "pypdfium2>=4.28",
+    "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+ui = ["streamlit>=1.36"]
+ai = ["openai>=1.40"]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+artisan-forge = "artisan_forge.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["artisan_forge*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"

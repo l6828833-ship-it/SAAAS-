@@ -1,0 +1,12 @@
+[server]
+headless = true
+# Railway terminates TLS and proxies the websocket; the CORS check breaks it.
+enableCORS = false
+maxUploadSize = 50
+
+[browser]
+gatherUsageStats = false
+
+[theme]
+base = "light"
+primaryColor = "#B4728A"
