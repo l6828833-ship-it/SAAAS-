@@ -43,7 +43,7 @@ def show(manifest: dict, run_dir: str | Path, compact: bool = False) -> None:
     for warning in manifest.get("warnings", []):
         theme.note(warning, "warn")
 
-    tabs = st.tabs(["Mockups", "Files", "Etsy listing", "Report"])
+    tabs = st.tabs(["Mockups", "Files", "Etsy listing", "Publish to Etsy", "Report"])
 
     with tabs[0]:
         if images:
@@ -92,6 +92,15 @@ def show(manifest: dict, run_dir: str | Path, compact: bool = False) -> None:
         st.caption(f"Suggested price: ${listing.get('suggested_price_usd', 0):.2f}")
 
     with tabs[3]:
+        user = st.session_state.get("user")
+        if user:
+            from . import etsy_panel
+
+            etsy_panel.publish_panel(user, manifest, run_dir)
+        else:
+            st.info("Sign in to publish.")
+
+    with tabs[4]:
         st.write(
             f"Artwork: `{manifest.get('art_source')}` \u00b7 "
             f"content: `{manifest.get('content_source', 'n/a')}`"

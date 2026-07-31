@@ -76,6 +76,7 @@ with Pillow, so every build still completes end to end.
 | AI content | Chat Completions, model fallback chain | `artisan_forge/ai/text_client.py` |
 | Offline art / copy | Pillow painter + templates | `artisan_forge/ai/procedural.py`, `products/bundle.py` |
 | Mockups | Pillow compositing | `artisan_forge/mockups/` |
+| Etsy drafts | Open API v3 + OAuth PKCE | `artisan_forge/etsy/` |
 | Canva (optional) | Canva Connect API | `artisan_forge/canva/client.py` |
 | Packaging | listing copy + ZIP | `artisan_forge/packaging.py` |
 
@@ -111,7 +112,7 @@ build (`strict_dates=True`); rendering anomalies are surfaced as warnings.
 
 ```bash
 python -m artisan_forge --verify 1900-2200     # both week starts, all months
-python -m pytest                               # 55 checks: dates, accounts, bundle, UI pages
+python -m pytest                               # 84 checks: dates, accounts, bundle, Etsy, UI
 ```
 
 The UI suite drives the real app through Streamlit's `AppTest`, signing up an account and rendering
@@ -160,6 +161,36 @@ bundle grid, desk lifestyle scene, three-frame gallery wall, detail crop, "what 
 print stack, gift bundle, and a size chart. Frames are drawn with gradient mouldings, mats, glass
 sheen and soft shadows; the desk scene uses a real perspective warp.
 
+## Etsy auto-listing (drafts only)
+
+Connect your shop on the Account page, then use the **Publish to Etsy** tab on any build. Artisan
+Forge creates the listing with `createDraftListing`, attaches up to 10 mockups and the buyer files,
+and stops there. Nothing in `artisan_forge/etsy/` can set a listing to `active` - you review and
+publish inside Etsy.
+
+Setup:
+
+1. Create an app at etsy.com/developers -> Your Apps and copy the keystring.
+2. Register the callback URL, then set `ETSY_KEYSTRING` and `ETSY_REDIRECT_URI` to the same URL.
+3. Set `AF_SECRET_KEY` to any random string.
+4. Account -> Etsy shop -> **Connect Etsy shop**.
+
+How it works:
+
+- OAuth 2.0 authorization code flow with PKCE (`S256`), requesting `listings_r listings_w shops_r`.
+  The `state` parameter is checked against the session before the code is exchanged.
+- Tokens are encrypted with Fernet before they touch SQLite, keyed from `AF_SECRET_KEY`. A 401
+  triggers one silent refresh and a retry; the new token is re-encrypted and saved.
+- Requests are paced to ~4.8/second to stay inside the 5 QPS personal-access budget. A full listing
+  costs roughly 13-15 calls out of the 5,000 daily allowance.
+- Titles and tags are sanitised for Etsy's rules (140 chars, 13 tags, 20 chars each, no punctuation
+  in tags), and files over Etsy's 20 MB limit are skipped with a warning rather than failing.
+- Draft ids are recorded per build, so the Publish tab shows what was already created and links
+  straight to the Etsy editor.
+
+Personal access covers your own shop. Publishing to other people's shops needs Etsy's commercial
+access review.
+
 ## Canva (optional)
 
 Add `CANVA_ACCESS_TOKEN` (scopes `asset:write`, `design:content:write`) and pass `--canva`. The
@@ -197,8 +228,8 @@ The repo ships with what Railway's builder needs: `Procfile` (binds Streamlit to
 `0.0.0.0`), `.python-version` (3.12) and `.streamlit/config.toml`.
 
 1. Push to `main` and point a Railway service at the repo.
-2. Set variables: `OPENAI_API_KEY` (optional), `AF_IMAGE_MODEL`, `AF_TEXT_MODEL` (optional) and
-   **`AF_SIGNUP_CODE`**.
+2. Set variables: `OPENAI_API_KEY` (optional), `AF_IMAGE_MODEL`, `AF_TEXT_MODEL` (optional),
+   `ETSY_KEYSTRING`, `ETSY_REDIRECT_URI`, `AF_SECRET_KEY` and **`AF_SIGNUP_CODE`**.
 3. Attach a volume mounted at `/data`, then set `AF_DATA_DIR=/data` and
    `AF_OUTPUT_DIR=/data/output`.
 4. Generate a domain under Settings -> Networking.

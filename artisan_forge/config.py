@@ -35,6 +35,18 @@ class Settings:
     force_offline: bool = field(default_factory=lambda: _flag("AF_OFFLINE"))
     output_dir: Path = field(default_factory=lambda: Path(os.getenv("AF_OUTPUT_DIR", "output")))
 
+    etsy_keystring: str | None = field(default_factory=lambda: os.getenv("ETSY_KEYSTRING") or None)
+    etsy_shared_secret: str | None = field(
+        default_factory=lambda: os.getenv("ETSY_SHARED_SECRET") or None
+    )
+    etsy_redirect_uri: str = field(
+        default_factory=lambda: os.getenv("ETSY_REDIRECT_URI", "http://localhost:8501")
+    )
+    # Override if your app needs "keystring:shared_secret" in the x-api-key header.
+    etsy_api_key_header: str | None = field(
+        default_factory=lambda: os.getenv("AF_ETSY_API_KEY_HEADER") or None
+    )
+
     canva_client_id: str | None = field(default_factory=lambda: os.getenv("CANVA_CLIENT_ID") or None)
     canva_client_secret: str | None = field(
         default_factory=lambda: os.getenv("CANVA_CLIENT_SECRET") or None
@@ -51,6 +63,11 @@ class Settings:
     @property
     def canva_available(self) -> bool:
         return bool(self.canva_access_token)
+
+    @property
+    def etsy_configured(self) -> bool:
+        """True when the app can start an Etsy OAuth flow."""
+        return bool(self.etsy_keystring and self.etsy_redirect_uri)
 
     def resolved_output_dir(self) -> Path:
         path = self.output_dir

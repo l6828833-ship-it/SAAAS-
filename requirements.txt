@@ -10,5 +10,8 @@ streamlit==1.60.0
 # --- AI images (optional: falls back to procedural art when absent) ---
 openai==1.59.6
 
+# --- Etsy integration (encrypts OAuth tokens at rest) ---
+cryptography==50.0.0
+
 # --- HTTP (used by the optional Canva Connect client) ---
 requests==2.32.3

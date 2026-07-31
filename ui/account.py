@@ -10,7 +10,7 @@ from artisan_forge.ai.text_client import model_chain
 from artisan_forge.config import get_settings
 from artisan_forge.saas import auth, db
 
-from . import theme
+from . import etsy_panel, theme
 
 
 def render(user: dict) -> None:
@@ -38,6 +38,7 @@ def render(user: dict) -> None:
     rows = [
         ("OpenAI images", settings.ai_available, settings.image_model),
         ("ChatGPT content", settings.ai_available, ", ".join(model_chain(settings)[:2])),
+        ("Etsy app", settings.etsy_configured, settings.etsy_redirect_uri),
         ("Canva Connect", settings.canva_available, "editable designs"),
         ("Signup invite code", bool(os.getenv("AF_SIGNUP_CODE", "").strip()), "closes open signups"),
     ]
@@ -58,6 +59,8 @@ def render(user: dict) -> None:
             "ChatGPT write bundle content. Everything works without it.",
             "info",
         )
+
+    etsy_panel.connect_panel(user)
 
     theme.section("Change password")
     with st.form("password_form"):

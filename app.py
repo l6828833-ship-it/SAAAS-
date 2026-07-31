@@ -10,7 +10,17 @@ import streamlit as st
 from artisan_forge import __version__
 from artisan_forge.config import get_settings
 from artisan_forge.saas import db
-from ui import account, auth_view, bundle_studio, calendar_studio, dashboard, library, soon, theme
+from ui import (
+    account,
+    auth_view,
+    bundle_studio,
+    calendar_studio,
+    dashboard,
+    etsy_panel,
+    library,
+    soon,
+    theme,
+)
 
 st.set_page_config(
     page_title="Artisan Forge",
@@ -24,6 +34,9 @@ db.init_db()
 user = auth_view.gate()
 if not user:
     st.stop()
+
+# Etsy sends the OAuth code back to this same URL.
+etsy_panel.handle_callback(user)
 
 WORKSPACE = [
     ("Dashboard", "\U0001f3e0"),

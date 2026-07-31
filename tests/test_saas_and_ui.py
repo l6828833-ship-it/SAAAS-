@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import json
 
 import pytest
 
@@ -242,3 +243,40 @@ def test_signup_then_every_page_renders(app_test):
     app.session_state["nav"] = "Bundle Studio"
     app.run()
     assert any("Generate bundle" in button.label for button in app.button)
+
+
+def test_library_renders_a_build_with_the_etsy_publish_tab(app_test, tmp_path):
+    app = _sign_up(app_test)
+    user_id = app.session_state["user"]["id"]
+
+    from PIL import Image
+
+    run_dir = tmp_path / "output" / "20260731-120000_demo"
+    (run_dir / "mockups").mkdir(parents=True)
+    image = run_dir / "mockups" / "01_hero.jpg"
+    Image.new("RGB", (64, 64), (120, 90, 200)).save(image, format="JPEG")
+    manifest = {
+        "product_type": "calendar",
+        "title": "2026 Demo Calendar",
+        "pages": 14,
+        "duration_seconds": 12.3,
+        "art_source": "procedural",
+        "files": {"pdfs": {}, "listing_images": [str(image)], "zip": None},
+        "listing": {"title": "2026 Demo Calendar", "tags": ["2026 calendar"], "description": "Demo"},
+        "verification": {"ok": True, "checks": 233},
+        "warnings": [],
+    }
+    (run_dir / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    from artisan_forge.saas import db
+
+    db.record_build(user_id, "calendar", "2026 Demo Calendar", run_dir, pages=14, images=1)
+
+    app.session_state["nav"] = "Library"
+    app.run()
+    assert not app.exception
+    body = " ".join(md.value for md in app.markdown)
+    assert "2026 Demo Calendar" in body
+    # Etsy tab explains what is missing instead of blowing up
+    notes = body + " ".join(info.value for info in app.info)
+    assert "Etsy" in notes or "Connect" in notes
