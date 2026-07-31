@@ -536,3 +536,41 @@ def test_listing_images_filters_non_images(manifest, tmp_path):
     manifest["files"]["listing_images"].append(str(tmp_path / "missing.jpg"))
     assert len(listing_images(manifest)) == 3
     assert len(listing_images(manifest, limit=2)) == 2
+
+
+# --------------------------------------------------- credential diagnostics
+def test_config_trims_quotes_and_whitespace(monkeypatch):
+    import importlib
+
+    from artisan_forge import config as config_module
+
+    monkeypatch.setenv("ETSY_KEYSTRING", '  "wdofi3t6jknkd4tjpkpw5knz"\n')
+    monkeypatch.setenv("ETSY_REDIRECT_URI", " https://app.example.com ")
+    monkeypatch.setenv("OPENAI_API_KEY", "'sk-test'")
+    importlib.reload(config_module)
+
+    settings = config_module.get_settings()
+    assert settings.etsy_keystring == "wdofi3t6jknkd4tjpkpw5knz"
+    assert settings.etsy_redirect_uri == "https://app.example.com"
+    assert settings.openai_api_key == "sk-test"
+    assert settings.etsy_configured is True
+
+
+def test_credential_warnings_catch_common_mistakes():
+    from ui.etsy_panel import credential_warnings, mask
+
+    assert credential_warnings("wdofi3t6jknkd4tjpkpw5knz", "https://app.example.com") == []
+    assert "empty" in credential_warnings("", "https://app")[0]
+    assert "does not look like" in credential_warnings("short", "https://app")[0]
+    assert "does not look like" in credential_warnings(
+        "KEY WITH SPACES AND CAPS", "https://app"
+    )[0]
+    assert any(
+        "http" in problem for problem in credential_warnings("wdofi3t6jknkd4tjpkpw5knz", "app.example.com")
+    )
+    assert any(
+        "slash" in problem
+        for problem in credential_warnings("wdofi3t6jknkd4tjpkpw5knz", "https://app.example.com/")
+    )
+    assert mask("wdofi3t6jknkd4tjpkpw5knz") == "wdof\u20265knz"
+    assert mask("") == "(empty)"

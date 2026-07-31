@@ -24,27 +24,42 @@ def _flag(name: str, default: bool = False) -> bool:
     return raw.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _clean(name: str, default: str = "") -> str:
+    """Read an env var, trimming whitespace and stray surrounding quotes.
+
+    Pasting `KEY="abc"` or a value with a trailing newline into a hosting
+    dashboard is common, and an API key with quotes around it fails in ways
+    that are hard to diagnose.
+    """
+    raw = os.getenv(name)
+    value = default if raw is None else raw
+    value = value.strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "\"'":
+        value = value[1:-1].strip()
+    return value
+
+
 @dataclass
 class Settings:
     """Resolved settings. Read once per process, cheap to rebuild."""
 
-    openai_api_key: str | None = field(default_factory=lambda: os.getenv("OPENAI_API_KEY") or None)
-    image_model: str = field(default_factory=lambda: os.getenv("AF_IMAGE_MODEL", "gpt-image-1.5"))
-    image_quality: str = field(default_factory=lambda: os.getenv("AF_IMAGE_QUALITY", "high"))
-    text_model: str = field(default_factory=lambda: os.getenv("AF_TEXT_MODEL", ""))
+    openai_api_key: str | None = field(default_factory=lambda: _clean("OPENAI_API_KEY") or None)
+    image_model: str = field(default_factory=lambda: _clean("AF_IMAGE_MODEL", "gpt-image-1.5"))
+    image_quality: str = field(default_factory=lambda: _clean("AF_IMAGE_QUALITY", "high"))
+    text_model: str = field(default_factory=lambda: _clean("AF_TEXT_MODEL"))
     force_offline: bool = field(default_factory=lambda: _flag("AF_OFFLINE"))
     output_dir: Path = field(default_factory=lambda: Path(os.getenv("AF_OUTPUT_DIR", "output")))
 
-    etsy_keystring: str | None = field(default_factory=lambda: os.getenv("ETSY_KEYSTRING") or None)
+    etsy_keystring: str | None = field(default_factory=lambda: _clean("ETSY_KEYSTRING") or None)
     etsy_shared_secret: str | None = field(
-        default_factory=lambda: os.getenv("ETSY_SHARED_SECRET") or None
+        default_factory=lambda: _clean("ETSY_SHARED_SECRET") or None
     )
     etsy_redirect_uri: str = field(
-        default_factory=lambda: os.getenv("ETSY_REDIRECT_URI", "http://localhost:8501")
+        default_factory=lambda: _clean("ETSY_REDIRECT_URI", "http://localhost:8501")
     )
     # Override if your app needs "keystring:shared_secret" in the x-api-key header.
     etsy_api_key_header: str | None = field(
-        default_factory=lambda: os.getenv("AF_ETSY_API_KEY_HEADER") or None
+        default_factory=lambda: _clean("AF_ETSY_API_KEY_HEADER") or None
     )
 
     canva_client_id: str | None = field(default_factory=lambda: os.getenv("CANVA_CLIENT_ID") or None)

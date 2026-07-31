@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 import streamlit as st
@@ -18,6 +19,38 @@ CATEGORY_HINTS = {
     "calendar": "calendar",
     "bundle": "digital",
 }
+
+# Etsy keystrings are ~24 lowercase alphanumeric characters.
+KEYSTRING_RE = re.compile(r"^[a-z0-9]{20,32}$")
+
+
+def mask(secret: str) -> str:
+    if not secret:
+        return "(empty)"
+    if len(secret) <= 8:
+        return f"{secret[:2]}\u2026{secret[-2:]}"
+    return f"{secret[:4]}\u2026{secret[-4:]}"
+
+
+def credential_warnings(keystring: str, redirect_uri: str) -> list[str]:
+    """Cheap local checks for the mistakes that cause 'app not recognized'."""
+    problems: list[str] = []
+    if not keystring:
+        problems.append("ETSY_KEYSTRING is empty.")
+    elif not KEYSTRING_RE.match(keystring):
+        problems.append(
+            f"ETSY_KEYSTRING does not look like an Etsy keystring ({len(keystring)} chars, "
+            "expected ~24 lowercase letters and digits). Check for quotes, spaces or a "
+            "pasted shared secret."
+        )
+    if not redirect_uri.startswith(("http://", "https://")):
+        problems.append("ETSY_REDIRECT_URI must start with http:// or https://")
+    elif redirect_uri.rstrip("/") != redirect_uri:
+        problems.append(
+            "ETSY_REDIRECT_URI ends with a slash - it must match the callback registered on "
+            "Etsy character for character."
+        )
+    return problems
 
 
 # ------------------------------------------------------------------ plumbing
@@ -153,11 +186,35 @@ def connect_panel(user: dict) -> None:
 
     verifier = st.session_state.setdefault("etsy_verifier", oauth.new_verifier())
     state = st.session_state.setdefault("etsy_state", oauth.new_state())
-    url = oauth.authorize_url(settings.etsy_keystring, settings.etsy_redirect_uri, verifier, state)
+    keystring = settings.etsy_keystring or ""
+    url = oauth.authorize_url(keystring, settings.etsy_redirect_uri, verifier, state)
+
+    for problem in credential_warnings(keystring, settings.etsy_redirect_uri):
+        theme.note(problem, "warn")
+
     st.link_button("Connect Etsy shop", url, type="primary", use_container_width=True)
-    st.caption(
-        f"Requests {', '.join(oauth.SCOPES)}. Redirect URI: {settings.etsy_redirect_uri}"
-    )
+    st.caption(f"Requests {', '.join(oauth.SCOPES)}. Redirect URI: {settings.etsy_redirect_uri}")
+
+    with st.expander("Etsy says \u201capplication not recognized\u201d?"):
+        st.markdown(
+            "That message comes from Etsy before it reaches this app: the `client_id` we sent "
+            "is not a keystring Etsy accepts. Check, in order:\n\n"
+            "1. **Stale keystring** - if you regenerated the key on Etsy, the old string stops "
+            "working. Copy the current one from Your Apps into `ETSY_KEYSTRING` and redeploy.\n"
+            "2. **Wrong app** - a banned or deleted app's keystring is never recognized. Use the "
+            "keystring of an app whose status is *Personal Access*.\n"
+            "3. **Redirect URI** - it must be registered on the Etsy app and match "
+            "`ETSY_REDIRECT_URI` exactly, including https, port and any trailing slash.\n"
+            "4. **Copy/paste damage** - quotes, spaces or a newline around the value. Artisan "
+            "Forge now trims those, so redeploy after fixing the variable.\n"
+        )
+        st.code(
+            f"client_id sent : {mask(keystring)}  ({len(keystring)} chars)\n"
+            f"redirect_uri   : {settings.etsy_redirect_uri}\n"
+            f"scopes         : {' '.join(oauth.SCOPES)}",
+            language="text",
+        )
+        st.caption("Compare the values above with the app page on etsy.com/developers.")
 
 
 # ------------------------------------------------------------------- publish
