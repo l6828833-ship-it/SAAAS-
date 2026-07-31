@@ -1,9 +1,9 @@
 """Etsy listing image factory.
 
-Takes the rendered calendar pages and composites a full set of listing
-images: hero, 3D frame mockups, lifestyle scenes, bundle previews, size
-chart and a detail crop. Everything is drawn with Pillow - no stock photos,
-no external mockup templates.
+Takes rendered PDF pages plus a `MockupContext` and composites a listing image
+set: hero, 3D frame mockups, lifestyle scenes, bundle previews, size chart and
+a detail crop. Everything is drawn with Pillow - no stock photos, no external
+mockup templates, and nothing product-specific in here.
 """
 
 from __future__ import annotations
@@ -13,10 +13,9 @@ from typing import Callable
 
 from PIL import Image, ImageDraw, ImageFilter
 
-from ..models import LISTING_IMAGE_PX, CalendarSpec
-from ..pdf.calendar_pdf import first_month_page_index
-from ..pdf.dates import MONTH_NAMES
+from ..models import LISTING_IMAGE_PX
 from ..themes import Theme, get_theme
+from .context import MockupContext
 from .draw_utils import (
     composite_at,
     cover_crop,
@@ -35,7 +34,7 @@ from .draw_utils import (
     text_width,
     warp_into,
 )
-from .render import render_pdf_pages
+from .render import page_count, render_pdf_pages
 
 Progress = Callable[[str, float], None]
 
@@ -43,19 +42,35 @@ BLACK_FRAME = (30, 30, 32)
 OAK_FRAME = (198, 160, 112)
 WHITE_FRAME = (247, 246, 243)
 
+SCENE_FILES = {
+    "hero": "hero",
+    "frame_wall": "frame_wall",
+    "bundle_grid": "bundle_pages",
+    "desk": "desk_lifestyle",
+    "frame_gallery": "frame_gallery",
+    "detail": "detail_zoom",
+    "included": "whats_included",
+    "stack": "print_stack",
+    "gift": "gift_bundle",
+    "size_chart": "size_chart",
+}
+
 
 class MockupStudio:
-    """Builds every listing image for one product."""
+    """Builds listing images from a context plus rendered pages."""
 
-    def __init__(self, spec: CalendarSpec, pages: list[Image.Image], size: int = LISTING_IMAGE_PX):
-        self.spec = spec
-        self.theme: Theme = get_theme(spec.theme)
+    def __init__(
+        self,
+        context: MockupContext,
+        cover: Image.Image,
+        interiors: list[Image.Image],
+        size: int = LISTING_IMAGE_PX,
+    ):
+        self.ctx = context
         self.S = size
-        self.pages = pages
-
-        start = first_month_page_index(spec)
-        self.cover = pages[0] if spec.include_cover and pages else pages[min(start, len(pages) - 1)]
-        self.months = pages[start : start + 12] or [self.cover]
+        self.theme: Theme = get_theme(context.theme_key)
+        self.cover = cover
+        self.interiors = interiors or [cover]
 
         pal = self.theme.palette
         self.ink = hex_to_rgb(pal["ink"])
@@ -67,8 +82,7 @@ class MockupStudio:
         self.wall = mix(self.band, (255, 255, 255), 0.25 if not self.dark_theme else 0.0)
 
     # ------------------------------------------------------------- utilities
-    def _canvas(self, top: tuple[int, int, int] | None = None,
-               bottom: tuple[int, int, int] | None = None) -> Image.Image:
+    def _canvas(self, top=None, bottom=None) -> Image.Image:
         top = top or mix(self.band, (255, 255, 255), 0.45)
         bottom = bottom or self.band
         return gradient((self.S, self.S), top, bottom).convert("RGBA")
@@ -76,8 +90,8 @@ class MockupStudio:
     def f(self, ratio: float, weight: str = "regular"):
         return get_font(max(10, int(self.S * ratio)), weight)
 
-    def _month_page(self, index: int) -> Image.Image:
-        return self.months[index % len(self.months)]
+    def _page(self, index: int) -> Image.Image:
+        return self.interiors[index % len(self.interiors)]
 
     def _eyebrow(self, draw, y: float, text: str, color=None) -> None:
         draw_text(
@@ -98,6 +112,9 @@ class MockupStudio:
         )
 
     def _badges(self, canvas: Image.Image, y: int, labels: list[str]) -> None:
+        labels = [l for l in labels if l][:4]
+        if not labels:
+            return
         font = self.f(0.019, "bold")
         pad_x, pad_h = int(self.S * 0.026), int(self.S * 0.052)
         gap = int(self.S * 0.018)
@@ -139,19 +156,17 @@ class MockupStudio:
         canvas = Image.alpha_composite(canvas, glow.filter(ImageFilter.GaussianBlur(self.S * 0.04)))
 
         draw = ImageDraw.Draw(canvas)
-        self._eyebrow(draw, self.S * 0.055, "printable digital download")
-        y = self._headline(draw, self.S * 0.085, f"{self.spec.year} {self.theme.label}", 0.058)
-        self._headline(draw, y, "Calendar", 0.058)
+        self._eyebrow(draw, self.S * 0.055, self.ctx.eyebrow)
+        y = self.S * 0.085
+        for line in self.ctx.title_lines[:2]:
+            y = self._headline(draw, y, line, 0.058)
 
         sheet = paper_sheet(scale_to_height(self.cover, int(self.S * 0.56)))
         paste_with_shadow(
             canvas, sheet, ((self.S - sheet.width) // 2, int(self.S * 0.27)),
             blur=int(self.S * 0.016), offset=(0, int(self.S * 0.012)), alpha=105,
         )
-        self._badges(
-            canvas, int(self.S * 0.885),
-            ["12 months", self.spec.size_label.replace('"', "in"), "instant download"],
-        )
+        self._badges(canvas, int(self.S * 0.885), self.ctx.badges)
         return canvas
 
     def scene_frame_wall(self) -> Image.Image:
@@ -163,13 +178,16 @@ class MockupStudio:
             blur=int(self.S * 0.02), offset=(int(self.S * 0.006), int(self.S * 0.016)), alpha=115,
         )
         draw = ImageDraw.Draw(canvas)
-        self._eyebrow(draw, self.S * 0.055, "frame it \u00b7 gift it \u00b7 love it")
-        self._caption(draw, self.S * 0.905, "Prints beautifully at home or at any print shop")
+        self._eyebrow(draw, self.S * 0.055, self.ctx.caption("frame_eyebrow", "frame it \u00b7 gift it \u00b7 love it"))
+        self._caption(
+            draw, self.S * 0.905,
+            self.ctx.caption("frame_caption", "Prints beautifully at home or at any print shop"),
+        )
         return canvas
 
     def scene_frame_gallery(self) -> Image.Image:
         canvas = self._wall_scene()
-        picks = [self._month_page(0), self.cover, self._month_page(6)]
+        picks = [self._page(0), self.cover, self._page(min(6, len(self.interiors) - 1))]
         heights = [0.34, 0.46, 0.34]
         frames = []
         for page, ratio, color in zip(picks, heights, (OAK_FRAME, BLACK_FRAME, WHITE_FRAME)):
@@ -187,9 +205,9 @@ class MockupStudio:
             )
             x += frame.width + gap
         draw = ImageDraw.Draw(canvas)
-        self._eyebrow(draw, self.S * 0.06, "one file \u00b7 twelve prints")
-        self._headline(draw, self.S * 0.095, "Print any month you love", 0.042)
-        self._caption(draw, self.S * 0.88, "Mix, match and reframe all year long")
+        self._eyebrow(draw, self.S * 0.06, self.ctx.caption("gallery_eyebrow", "one file \u00b7 many prints"))
+        self._headline(draw, self.S * 0.095, self.ctx.caption("gallery_headline", "Print any page you love"), 0.042)
+        self._caption(draw, self.S * 0.88, self.ctx.caption("gallery_caption", "Mix, match and reframe any time"))
         return canvas
 
     def scene_desk(self) -> Image.Image:
@@ -204,7 +222,7 @@ class MockupStudio:
             [(0, desk_y), (self.S, desk_y)], fill=(*shade(wood, -0.45), 170), width=3
         )
 
-        page = paper_sheet(scale_to_height(self._month_page(0), int(self.S * 0.46)))
+        page = paper_sheet(scale_to_height(self._page(0), int(self.S * 0.46)))
         w, h = page.width, page.height
         x0, y0 = int(self.S * 0.3), int(self.S * 0.24)
         quad = [
@@ -223,10 +241,10 @@ class MockupStudio:
         self._draw_pencil(canvas, int(self.S * 0.34), int(desk_y + self.S * 0.13))
 
         draw = ImageDraw.Draw(canvas)
-        self._eyebrow(draw, self.S * 0.055, "desk, wall or planner ready")
+        self._eyebrow(draw, self.S * 0.055, self.ctx.caption("desk_eyebrow", "desk, wall or binder ready"))
         self._caption(
             draw, self.S * 0.925,
-            f"{MONTH_NAMES[0]} {self.spec.year} \u00b7 {self.spec.size_label}",
+            self.ctx.caption("desk_caption", self.ctx.size_label),
             color=shade(wood, 0.62),
         )
         return canvas
@@ -234,16 +252,17 @@ class MockupStudio:
     def scene_bundle_grid(self) -> Image.Image:
         canvas = self._canvas(mix(self.band, (255, 255, 255), 0.6), self.band)
         draw = ImageDraw.Draw(canvas)
-        self._eyebrow(draw, self.S * 0.05, "everything included")
-        self._headline(draw, self.S * 0.078, "12 Months Ready to Print", 0.044)
+        self._eyebrow(draw, self.S * 0.05, self.ctx.grid_eyebrow)
+        self._headline(draw, self.S * 0.078, self.ctx.grid_headline, 0.044)
 
-        cols, rows = 4, 3
+        cols, rows = max(1, self.ctx.grid_cols), max(1, self.ctx.grid_rows)
+        slots = cols * rows
         top = int(self.S * 0.19)
         area_h = int(self.S * 0.72)
         cell_w, cell_h = self.S / cols, area_h / rows
         thumb_h = int(cell_h * 0.82)
-        for index in range(12):
-            page = self._month_page(index)
+        for index in range(slots):
+            page = self._page(index)
             thumb = paper_sheet(scale_to_height(page, thumb_h), border=1)
             if thumb.width > cell_w * 0.84:
                 thumb = paper_sheet(scale_to_width(page, int(cell_w * 0.84)), border=1)
@@ -254,14 +273,15 @@ class MockupStudio:
                 canvas, thumb, (int(cx - thumb.width / 2), int(cy - thumb.height / 2)),
                 blur=int(self.S * 0.006), offset=(0, int(self.S * 0.005)), alpha=80,
             )
-        self._caption(draw, self.S * 0.935, f"January \u2013 December {self.spec.year}")
+        if self.ctx.grid_caption:
+            self._caption(draw, self.S * 0.935, self.ctx.grid_caption)
         return canvas
 
     def scene_stack(self) -> Image.Image:
         canvas = self._canvas()
-        base = scale_to_height(self._month_page(3), int(self.S * 0.5))
+        base_h = int(self.S * 0.5)
         for index, angle in enumerate((-9.0, 5.0, 0.0)):
-            page = paper_sheet(scale_to_height(self._month_page(index * 4), base.height))
+            page = paper_sheet(scale_to_height(self._page(index * 4), base_h))
             rotated = page.rotate(angle, expand=True, resample=Image.BICUBIC)
             offset_x = int(self.S * (0.5 + 0.03 * (index - 1))) - rotated.width // 2
             offset_y = int(self.S * (0.28 + 0.01 * index))
@@ -270,12 +290,15 @@ class MockupStudio:
                 offset=(int(self.S * 0.004), int(self.S * 0.01)), alpha=95,
             )
         draw = ImageDraw.Draw(canvas)
-        self._eyebrow(draw, self.S * 0.055, "print at home in minutes")
-        self._headline(draw, self.S * 0.083, "No printer? No problem.", 0.04)
+        self._eyebrow(draw, self.S * 0.055, self.ctx.caption("stack_eyebrow", "print at home in minutes"))
+        self._headline(draw, self.S * 0.083, self.ctx.caption("stack_headline", "No printer? No problem."), 0.04)
         self._caption(
             draw, self.S * 0.87,
-            "Send the PDF to any print shop \u00b7 "
-            + ("A4 & Letter included" if self.spec.has_a4_companion else "scales to any size"),
+            self.ctx.caption(
+                "stack_caption",
+                "Send the PDF to any print shop \u00b7 "
+                + ("A4 & Letter included" if self.ctx.a4_included else "scales to any size"),
+            ),
         )
         return canvas
 
@@ -303,19 +326,27 @@ class MockupStudio:
         composite_at(canvas, ribbon, x - int(self.S * 0.03), ribbon_y)
         draw = ImageDraw.Draw(canvas)
         draw_text(
-            draw, (self.S / 2, ribbon_y + ribbon_h / 2), "A THOUGHTFUL LAST-MINUTE GIFT",
+            draw, (self.S / 2, ribbon_y + ribbon_h / 2),
+            self.ctx.caption("gift_ribbon", "A THOUGHTFUL LAST-MINUTE GIFT"),
             self.f(0.019, "bold"), (255, 255, 255), align="center",
             tracking=self.S * 0.003, anchor_v="m",
         )
-        self._eyebrow(draw, self.S * 0.055, "gift it in minutes", shade(self.ink, -0.1))
-        self._caption(draw, self.S * 0.9, "Download, print, wrap. No shipping, no waiting.")
+        self._eyebrow(draw, self.S * 0.055, self.ctx.caption("gift_eyebrow", "gift it in minutes"), shade(self.ink, -0.1))
+        self._caption(
+            draw, self.S * 0.9,
+            self.ctx.caption("gift_caption", "Download, print, wrap. No shipping, no waiting."),
+        )
         return canvas
 
     def scene_size_chart(self) -> Image.Image:
         canvas = self._canvas(mix(self.band, (255, 255, 255), 0.72), mix(self.band, (255, 255, 255), 0.2))
         draw = ImageDraw.Draw(canvas)
-        self._eyebrow(draw, self.S * 0.06, "sizes & formats")
-        self._headline(draw, self.S * 0.092, "Fits Letter and A4", 0.044)
+        self._eyebrow(draw, self.S * 0.06, self.ctx.caption("size_eyebrow", "sizes & formats"))
+        self._headline(
+            draw, self.S * 0.092,
+            self.ctx.caption("size_headline", "Fits Letter and A4" if self.ctx.a4_included else "Print-ready sizes"),
+            0.044,
+        )
 
         page = scale_to_height(self.cover, int(self.S * 0.48))
         px = (self.S - page.width) // 2
@@ -325,39 +356,34 @@ class MockupStudio:
 
         arrow = (*self.muted, 255)
         gap = int(self.S * 0.03)
-        # width dimension
         wy = py + page.height + gap
         draw.line([(px, wy), (px + page.width, wy)], fill=arrow, width=3)
         for tick_x in (px, px + page.width):
             draw.line([(tick_x, wy - gap * 0.35), (tick_x, wy + gap * 0.35)], fill=arrow, width=3)
-        # height dimension
         hx = px + page.width + gap
         draw.line([(hx, py), (hx, py + page.height)], fill=arrow, width=3)
         for tick_y in (py, py + page.height):
             draw.line([(hx - gap * 0.35, tick_y), (hx + gap * 0.35, tick_y)], fill=arrow, width=3)
 
-        w_in, h_in = self.spec.trim_size_in
+        w_in, h_in = self.ctx.trim_size_in
         draw_text(draw, (px + page.width / 2, wy + gap * 0.5), f'{w_in:g}"', self.f(0.022, "bold"),
                   self.ink, align="center")
         draw_text(draw, (hx + gap * 0.5, py + page.height / 2), f'{h_in:g}"', self.f(0.022, "bold"),
                   self.ink, align="left", anchor_v="m")
 
-        lines = [
-            f'Included trim size \u2014 {w_in:g}" x {h_in:g}" ({round(w_in * 25.4)} x {round(h_in * 25.4)} mm)',
-            "A4 version included \u2014 210 x 297 mm"
-            if self.spec.has_a4_companion
-            else "Scales cleanly to any paper size",
+        lines = self.ctx.size_notes or [
+            f'Trim size \u2014 {w_in:g}" x {h_in:g}" ({round(w_in * 25.4)} x {round(h_in * 25.4)} mm)',
             "PDF \u00b7 vector text \u00b7 300 DPI ready",
         ]
         y = self.S * 0.85
-        for line in lines:
+        for line in lines[:3]:
             draw_text(draw, (self.S / 2, y), line, self.f(0.0195), self.muted, align="center")
             y += self.S * 0.032
         return canvas
 
     def scene_detail(self) -> Image.Image:
         canvas = self._canvas()
-        page = self._month_page(0)
+        page = self._page(0)
         crop_w, crop_h = int(page.width * 0.62), int(page.height * 0.42)
         left = (page.width - crop_w) // 2
         top = int(page.height * 0.3)
@@ -369,9 +395,12 @@ class MockupStudio:
             blur=int(self.S * 0.014), offset=(0, int(self.S * 0.01)), alpha=100,
         )
         draw = ImageDraw.Draw(canvas)
-        self._eyebrow(draw, self.S * 0.06, "actual detail")
-        self._headline(draw, self.S * 0.09, "Crisp, print-perfect dates", 0.042)
-        self._caption(draw, self.S * 0.85, "Verified date grid \u00b7 clean typography \u00b7 no pixelation")
+        self._eyebrow(draw, self.S * 0.06, self.ctx.caption("detail_eyebrow", "actual detail"))
+        self._headline(draw, self.S * 0.09, self.ctx.caption("detail_headline", "Crisp, print-perfect pages"), 0.042)
+        self._caption(
+            draw, self.S * 0.85,
+            self.ctx.caption("detail_caption", "Clean typography \u00b7 no pixelation \u00b7 no watermark"),
+        )
         self._badges(canvas, int(self.S * 0.9), ["300 dpi", "vector pdf", "no watermark"])
         return canvas
 
@@ -391,21 +420,13 @@ class MockupStudio:
         )
         draw = ImageDraw.Draw(canvas)
         top = (self.S - card_h) // 2
-        self._eyebrow(draw, top + self.S * 0.045, "what you get")
-        self._headline(draw, top + self.S * 0.075, "Instant digital bundle", 0.04)
+        self._eyebrow(draw, top + self.S * 0.045, self.ctx.caption("included_eyebrow", "what you get"))
+        self._headline(draw, top + self.S * 0.075, self.ctx.included_headline, 0.04)
 
-        items = [
-            f"12 month pages \u2014 January to December {self.spec.year}",
-            f"{self.spec.size_label} print-ready PDF"
-            + (" (US Letter & A4)" if self.spec.has_a4_companion else ""),
-            f"{self.spec.start_day}-start week layout",
-            "Cover page + year-at-a-glance overview",
-            "Print at home or at any print shop, unlimited times",
-        ]
         font = self.f(0.0205)
         x = (self.S - card_w) / 2 + self.S * 0.075
         y = top + self.S * 0.17
-        for item in items:
+        for item in self.ctx.bullets[:6]:
             draw.ellipse(
                 [x - self.S * 0.028, y + self.S * 0.004,
                  x - self.S * 0.028 + self.S * 0.016, y + self.S * 0.02],
@@ -437,7 +458,7 @@ class MockupStudio:
         sprite = Image.new("RGBA", (int(pot_w * 2.4), pot_h + leaf_h), (0, 0, 0, 0))
         draw = ImageDraw.Draw(sprite)
         base_x = (sprite.width - pot_w) // 2
-        green = mix(hex_to_rgb(self.theme.palette["accent"]), (86, 124, 92), 0.6)
+        green = mix(self.accent, (86, 124, 92), 0.6)
         for index in range(7):
             angle = -70 + index * 23
             length = leaf_h * (0.6 + 0.4 * (1 - abs(index - 3) / 3.5))
@@ -450,7 +471,7 @@ class MockupStudio:
                 (max(0, sprite.width // 2 - leaf.width // 2 + int(angle * pot_w * 0.006)),
                  max(0, leaf_h - leaf.height + int(pot_h * 0.15))),
             )
-        terracotta = mix(hex_to_rgb(self.theme.palette["accent"]), (188, 108, 74), 0.7)
+        terracotta = mix(self.accent, (188, 108, 74), 0.7)
         draw.polygon(
             [(base_x, leaf_h), (base_x + pot_w, leaf_h),
              (base_x + int(pot_w * 0.84), leaf_h + pot_h), (base_x + int(pot_w * 0.16), leaf_h + pot_h)],
@@ -477,22 +498,8 @@ class MockupStudio:
                           offset=(int(self.S * 0.002), int(self.S * 0.004)), alpha=80)
 
 
-SCENE_ORDER = [
-    ("01_hero", "scene_hero"),
-    ("02_frame_wall", "scene_frame_wall"),
-    ("03_bundle_12_months", "scene_bundle_grid"),
-    ("04_desk_lifestyle", "scene_desk"),
-    ("05_frame_gallery", "scene_frame_gallery"),
-    ("06_detail_zoom", "scene_detail"),
-    ("07_whats_included", "scene_included"),
-    ("08_print_stack", "scene_stack"),
-    ("09_gift_bundle", "scene_gift"),
-    ("10_size_chart", "scene_size_chart"),
-]
-
-
 def build_listing_images(
-    spec: CalendarSpec,
+    context: MockupContext,
     pdf_path: str | Path,
     out_dir: str | Path,
     count: int = 10,
@@ -500,25 +507,39 @@ def build_listing_images(
     dpi: int | None = None,
     progress: Progress | None = None,
 ) -> list[Path]:
-    """Render the PDF and composite the full listing image set."""
+    """Render the pages the scenes need, then composite the listing set."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     if dpi is None:
-        _, trim_h = spec.trim_size_in
+        _, trim_h = context.trim_size_in
         dpi = int(max(90, min(190, (size * 0.62) / trim_h)))
-    pages = render_pdf_pages(pdf_path, dpi=dpi)
-    if not pages:
-        raise RuntimeError(f"No pages rendered from {pdf_path}")
 
-    studio = MockupStudio(spec, pages, size=size)
+    total_pages = page_count(pdf_path)
+    if total_pages == 0:
+        raise RuntimeError(f"No pages found in {pdf_path}")
+
+    wanted = list(context.page_indexes) or list(range(min(12, total_pages)))
+    wanted = [i for i in wanted if 0 <= i < total_pages]
+    cover_index = context.cover_index if 0 <= context.cover_index < total_pages else 0
+
+    needed = sorted({cover_index, *wanted})
+    images = render_pdf_pages(pdf_path, dpi=dpi, indexes=needed)
+    by_index = dict(zip(needed, images))
+    cover = by_index[cover_index]
+    interiors = [by_index[i] for i in wanted] or [cover]
+
+    studio = MockupStudio(context, cover, interiors, size=size)
     produced: list[Path] = []
-    scenes = SCENE_ORDER[: max(1, count)]
-    for index, (name, method) in enumerate(scenes, start=1):
+    keys = context.scene_keys(count)
+    for position, key in enumerate(keys, start=1):
+        method = getattr(studio, f"scene_{key}", None)
+        if method is None:
+            continue
         if progress:
-            progress(f"Mockup {index}/{len(scenes)} ({name})", index / len(scenes))
-        image = getattr(studio, method)()
-        out_path = out_dir / f"{name}.jpg"
+            progress(f"Mockup {position}/{len(keys)} ({key})", position / len(keys))
+        image = method()
+        out_path = out_dir / f"{position:02d}_{SCENE_FILES.get(key, key)}.jpg"
         image.convert("RGB").save(out_path, format="JPEG", quality=92, optimize=True, progressive=True)
         produced.append(out_path)
     return produced

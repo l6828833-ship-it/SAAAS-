@@ -1,12 +1,17 @@
 [server]
 headless = true
-# Railway terminates TLS and proxies the websocket; the CORS check breaks it.
-enableCORS = false
+# XSRF protection stays on; it works through Railway's proxy and setting
+# enableCORS=false alongside it is ignored by Streamlit anyway.
+enableXsrfProtection = true
 maxUploadSize = 50
 
 [browser]
 gatherUsageStats = false
 
 [theme]
-base = "light"
-primaryColor = "#B4728A"
+base = "dark"
+primaryColor = "#7C5CFF"
+backgroundColor = "#08080C"
+secondaryBackgroundColor = "#12121A"
+textColor = "#ECECF1"
+font = "sans serif"

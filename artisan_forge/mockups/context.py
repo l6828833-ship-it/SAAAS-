@@ -51,6 +51,7 @@ class MockupContext:
     # Scene copy overrides
     captions: dict[str, str] = field(default_factory=dict)
     size_notes: list[str] = field(default_factory=list)
+    a4_included: bool = False
 
     # Which rendered pages to feature
     cover_index: int = 0

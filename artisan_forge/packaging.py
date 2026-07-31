@@ -204,10 +204,73 @@ def write_buyer_docs(spec: CalendarSpec, out_dir: str | Path) -> list[Path]:
     return files
 
 
-def write_listing_copy(spec: CalendarSpec, out_dir: str | Path) -> tuple[Path, Path, dict]:
+def generic_license_text(title: str) -> str:
+    return "\n".join(
+        [
+            "PERSONAL USE LICENCE",
+            "",
+            f"Product: {title}",
+            "",
+            "You may:",
+            "- Print and use this file as many times as you like for personal use",
+            "- Print copies as gifts for friends and family",
+            "",
+            "You may not:",
+            "- Resell, share, or redistribute the digital files",
+            "- Sell printed copies commercially",
+            "- Claim the design as your own",
+            "",
+            "All rights reserved by the seller.",
+        ]
+    )
+
+
+def write_product_docs(
+    title: str,
+    file_lines: list[str],
+    out_dir: str | Path,
+    printing: list[str] | None = None,
+) -> list[Path]:
+    """Buyer README + licence for any product type."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
-    copy = listing_copy(spec)
+    printing = printing or [
+        "1. Open the PDF in Adobe Reader (free) or your browser.",
+        "2. Print settings: Actual size / 100% scale.",
+        "3. Paper: 100-160 gsm matte card stock gives the best result.",
+    ]
+    readme = out_dir / "READ ME FIRST.txt"
+    readme.write_text(
+        "\n".join(
+            [
+                title,
+                "=" * max(len(title), 12),
+                "",
+                "Thank you for your purchase.",
+                "",
+                "FILES",
+                *file_lines,
+                "",
+                "PRINTING",
+                *printing,
+                "",
+                "LICENCE",
+                "Personal use only. Please do not resell, share or redistribute these files.",
+                "",
+                "Made with Artisan Forge.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    licence = out_dir / "LICENSE - personal use.txt"
+    licence.write_text(generic_license_text(title), encoding="utf-8")
+    return [readme, licence]
+
+
+def write_copy(copy: dict, out_dir: str | Path) -> tuple[Path, Path]:
+    """Write etsy_listing.json / .txt for any product type."""
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
     json_path = out_dir / "etsy_listing.json"
     json_path.write_text(json.dumps(copy, indent=2), encoding="utf-8")
     text_path = out_dir / "etsy_listing.txt"
@@ -223,11 +286,17 @@ def write_listing_copy(spec: CalendarSpec, out_dir: str | Path) -> tuple[Path, P
                 "DESCRIPTION",
                 copy["description"],
                 "",
-                f"SUGGESTED PRICE: ${copy['suggested_price_usd']:.2f}",
+                f"SUGGESTED PRICE: ${copy.get('suggested_price_usd', 0):.2f}",
             ]
         ),
         encoding="utf-8",
     )
+    return json_path, text_path
+
+
+def write_listing_copy(spec: CalendarSpec, out_dir: str | Path) -> tuple[Path, Path, dict]:
+    copy = listing_copy(spec)
+    json_path, text_path = write_copy(copy, out_dir)
     return json_path, text_path, copy
 
 

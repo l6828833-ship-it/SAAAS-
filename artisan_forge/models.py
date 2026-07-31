@@ -112,8 +112,9 @@ class CalendarSpec:
 class BuildResult:
     """Paths and metadata produced by a completed build."""
 
-    spec: CalendarSpec
+    spec: object
     run_dir: Path
+    product_type: str = "calendar"
     pdf_path: Path | None = None
     pdf_paths: dict[str, Path] = field(default_factory=dict)  # variant -> pdf
     art_paths: dict[str, Path] = field(default_factory=dict)  # "cover"/"month_01"/...
@@ -127,6 +128,7 @@ class BuildResult:
 
     def summary(self) -> dict:
         return {
+            "product_type": self.product_type,
             "run_dir": str(self.run_dir),
             "pdf": str(self.pdf_path) if self.pdf_path else None,
             "extra_pdfs": {k: str(v) for k, v in self.pdf_paths.items()},

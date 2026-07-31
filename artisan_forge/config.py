@@ -31,6 +31,7 @@ class Settings:
     openai_api_key: str | None = field(default_factory=lambda: os.getenv("OPENAI_API_KEY") or None)
     image_model: str = field(default_factory=lambda: os.getenv("AF_IMAGE_MODEL", "gpt-image-1.5"))
     image_quality: str = field(default_factory=lambda: os.getenv("AF_IMAGE_QUALITY", "high"))
+    text_model: str = field(default_factory=lambda: os.getenv("AF_TEXT_MODEL", ""))
     force_offline: bool = field(default_factory=lambda: _flag("AF_OFFLINE"))
     output_dir: Path = field(default_factory=lambda: Path(os.getenv("AF_OUTPUT_DIR", "output")))
 

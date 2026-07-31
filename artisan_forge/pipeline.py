@@ -28,6 +28,7 @@ from .packaging import write_buyer_docs, write_listing_copy
 from .packaging import build_zip
 from .pdf.calendar_pdf import generate_calendar_pdf, month_page_count
 from .pdf.verify import verify_calendar_pdf, verify_grid_math
+from .products.calendar_product import mockup_context
 
 Progress = Callable[[str, float], None]
 
@@ -115,7 +116,7 @@ def build_product(
     report("Compositing mockups", 0.6)
     try:
         result.listing_images = build_listing_images(
-            spec,
+            mockup_context(spec),
             primary,
             mock_dir,
             count=listing_count or spec.listing_image_count,
@@ -145,6 +146,8 @@ def build_product(
     manifest = {
         "generated_at": dt.datetime.now().isoformat(timespec="seconds"),
         "artisan_forge_version": _version(),
+        "product_type": "calendar",
+        "title": spec.display_title(),
         "brief": spec.raw_brief,
         "spec": spec.to_dict(),
         "pages": month_page_count(spec),

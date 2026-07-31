@@ -4,8 +4,8 @@ pillow==11.0.0            # raster compositing (mockups, procedural art)
 pypdfium2==4.30.0         # PDF -> PNG rasterizing for mockup previews
 python-dotenv==1.0.1      # .env loading
 
-# --- Frontend (optional, but recommended) ---
-streamlit==1.40.2
+# --- Frontend (dashboard + accounts) ---
+streamlit==1.60.0
 
 # --- AI images (optional: falls back to procedural art when absent) ---
 openai==1.59.6

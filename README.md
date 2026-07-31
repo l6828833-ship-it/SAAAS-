@@ -1,11 +1,34 @@
 # Artisan Forge
 
-An automation engine for digital product creators. Describe a product in one sentence, get a
-print-ready PDF, matching artwork, ten Etsy listing images, listing copy and a buyer ZIP.
+A SaaS automation engine for digital product creators. Sign in, describe a product, press one
+button: you get a print-ready PDF, matching artwork, Etsy listing images, listing copy and a buyer
+ZIP.
 
 ```
+streamlit run app.py     # dashboard with accounts, studios and a library
 python -m artisan_forge "2026 minimalist calendar with watercolor floral theme, 8.5x11, Sunday start"
 ```
+
+## Studios
+
+| Studio | Status | What it does |
+|---|---|---|
+| \U0001f4c5 Calendar Studio | live | 12-month printable calendars, dates verified twice |
+| \u2728 Bundle Studio | live | ChatGPT writes prompts, checklists, trackers and affirmations; the engine lays them out |
+| \U0001f5d3\ufe0f Planner Studio | coming soon | dated/undated weekly, daily and habit planners |
+| \U0001f5bc\ufe0f Wall Art Studio | coming soon | quote posters in every Etsy ratio |
+| \U0001f4d3 Journal Studio | coming soon | low-content books, KDP trim sizes |
+| \U0001f4f1 Social Kit Studio | coming soon | matching Pinterest and Instagram promo graphics |
+
+The catalog lives in `artisan_forge/products/__init__.py`; `status="soon"` entries render as teaser
+cards in the dashboard instead of a studio page.
+
+## Accounts
+
+Email plus password, stored in SQLite (`data/artisan_forge.db`). Passwords are hashed with scrypt
+from the standard library using a per-user random salt and compared in constant time. The first
+account created becomes the admin; set `AF_SIGNUP_CODE` afterwards to make signups invite-only.
+Every finished product is recorded in that account's library.
 
 ```
 output/20260730-232852_2026-watercolor-floral-portrait/
@@ -38,16 +61,21 @@ with Pillow, so every build still completes end to end.
 
 | Component | Technology | Where |
 |---|---|---|
-| Frontend | Streamlit | `app.py` |
+| Dashboard UI | Streamlit + custom CSS | `app.py`, `ui/` |
+| Accounts & library | SQLite + scrypt | `artisan_forge/saas/` |
+| Product catalog | dataclasses | `artisan_forge/products/__init__.py` |
 | CLI | argparse | `artisan_forge/cli.py` |
-| Orchestration | plain Python | `artisan_forge/pipeline.py` |
+| Orchestration | plain Python | `artisan_forge/pipeline.py`, `products/bundle.py` |
 | Brief parsing | regex + theme scoring | `artisan_forge/brief.py` |
-| PDF generation | reportlab | `artisan_forge/pdf/calendar_pdf.py` |
+| Page geometry & primitives | reportlab | `artisan_forge/pdf/drawkit.py` |
+| Page components | reportlab | `artisan_forge/pdf/blocks.py` |
+| Calendar engine | reportlab | `artisan_forge/pdf/calendar_pdf.py` |
 | Date maths | stdlib `calendar` / `datetime` | `artisan_forge/pdf/dates.py` |
 | Date verification | grid maths + PDF text extraction | `artisan_forge/pdf/verify.py` |
 | AI images | OpenAI Images (`gpt-image-1.5`) | `artisan_forge/ai/image_client.py` |
-| Offline art | Pillow procedural painter | `artisan_forge/ai/procedural.py` |
-| Mockups | Pillow compositing | `artisan_forge/mockups/compose.py` |
+| AI content | Chat Completions, model fallback chain | `artisan_forge/ai/text_client.py` |
+| Offline art / copy | Pillow painter + templates | `artisan_forge/ai/procedural.py`, `products/bundle.py` |
+| Mockups | Pillow compositing | `artisan_forge/mockups/` |
 | Canva (optional) | Canva Connect API | `artisan_forge/canva/client.py` |
 | Packaging | listing copy + ZIP | `artisan_forge/packaging.py` |
 
@@ -83,8 +111,11 @@ build (`strict_dates=True`); rendering anomalies are surfaced as warnings.
 
 ```bash
 python -m artisan_forge --verify 1900-2200     # both week starts, all months
-python -m pytest                               # 43 checks incl. rendered-PDF verification
+python -m pytest                               # 55 checks: dates, accounts, bundle, UI pages
 ```
+
+The UI suite drives the real app through Streamlit's `AppTest`, signing up an account and rendering
+every page, so a broken studio fails the build rather than the browser.
 
 ## Themes
 
@@ -93,6 +124,19 @@ python -m pytest                               # 43 checks incl. rendered-PDF ve
 
 A theme drives the PDF palette and typography, the AI prompt, and the procedural fallback motif at
 once, so the pages, the art and the mockups always match.
+
+## Bundle Studio (ChatGPT)
+
+Give it a topic and an audience. ChatGPT returns a JSON plan - title, intro, section titles,
+prompts, checklist items, tracker columns, affirmations, plus Etsy copy - and the engine renders it
+as a printable bundle: cover, welcome page, prompt pages with writing lines, checklist pages,
+tracker grids, full-page affirmation prints, dot-grid notes and a closing page.
+
+Model ids change often, so `artisan_forge/ai/text_client.py` tries a chain and uses the first model
+that answers (`AF_TEXT_MODEL` goes to the front). Every model response is passed through
+`normalise_plan`, which drops unknown sections, fills missing fields from templates and clamps
+lengths - a malformed response degrades instead of breaking the build. With no API key the whole
+studio runs on templates.
 
 ## AI art
 
@@ -140,9 +184,10 @@ Batch a whole shop with `artisan_forge.pipeline.build_many([...])`.
 
 - **New theme**: add a `Theme` entry in `artisan_forge/themes.py` (palette, prompt, motif). Nothing
   else needs to change.
-- **New listing image**: add a `scene_*` method to `MockupStudio` and list it in `SCENE_ORDER`.
-- **New product type**: reuse `pipeline.build_product`'s shape - generate art, render a PDF, verify,
-  composite, package.
+- **New listing image**: add a `scene_*` method to `MockupStudio` and its key to `ALL_SCENES`.
+- **New product type**: build pages from `pdf/blocks.py`, describe the product to the compositor
+  with a `MockupContext`, then flip its catalog entry from `soon` to `live` and add a `ui/` page.
+  `products/bundle.py` is the reference implementation.
 - **Custom fonts**: drop TTFs into `assets/fonts/`; files named `*bold*` / `*italic*` /
   `*display*` are picked up automatically by both the PDF and the mockups.
 
@@ -152,15 +197,20 @@ The repo ships with what Railway's builder needs: `Procfile` (binds Streamlit to
 `0.0.0.0`), `.python-version` (3.12) and `.streamlit/config.toml`.
 
 1. Push to `main` and point a Railway service at the repo.
-2. Set variables: `OPENAI_API_KEY` (optional), `AF_IMAGE_MODEL`, and **`AF_APP_PASSWORD`**.
-3. Generate a domain under Settings -> Networking.
+2. Set variables: `OPENAI_API_KEY` (optional), `AF_IMAGE_MODEL`, `AF_TEXT_MODEL` (optional) and
+   **`AF_SIGNUP_CODE`**.
+3. Attach a volume mounted at `/data`, then set `AF_DATA_DIR=/data` and
+   `AF_OUTPUT_DIR=/data/output`.
+4. Generate a domain under Settings -> Networking.
 
 Two things to keep in mind:
 
-- **The URL is public.** Anything reachable there can start builds that spend OpenAI credits, so set
-  `AF_APP_PASSWORD` to enable the login gate. The sidebar warns while it is unset.
-- **The filesystem is ephemeral.** `output/` is wiped on every redeploy, so download the ZIP and
-  listing images from the Files tab rather than treating the server as storage.
+- **Signups are open until you close them.** The first account becomes the admin; set
+  `AF_SIGNUP_CODE` straight after creating it so strangers cannot register and spend your OpenAI
+  credits.
+- **The filesystem is ephemeral without a volume.** Both the accounts database and `output/` are
+  wiped on redeploy unless `AF_DATA_DIR` and `AF_OUTPUT_DIR` point at a mounted volume. Downloading
+  the ZIP from the Files tab is still the safest habit.
 
 ## Notes
 
