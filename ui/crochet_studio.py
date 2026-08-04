@@ -11,7 +11,9 @@ import streamlit as st
 
 from artisan_forge.ai.text_client import model_chain
 from artisan_forge.config import get_settings
+from artisan_forge.crochet import batch as batch_planner
 from artisan_forge.crochet import diagrams, etsy_data, market
+from artisan_forge.crochet.batch import ALLOCATION_STRATEGIES, DEFAULT_STRATEGY
 from artisan_forge.crochet.brand import BrandKit
 from artisan_forge.models import PAPER_SIZES
 from artisan_forge.products.crochet import (
@@ -24,7 +26,7 @@ from artisan_forge.products.crochet import (
     MODES,
     CrochetSpec,
     build_crochet_batch,
-    group_sources,
+    short_model,
 )
 from artisan_forge.saas import auth
 from artisan_forge.themes import theme_labels
@@ -135,8 +137,9 @@ def _mode_inputs(mode: str) -> dict:
     if mode == "from_pdfs":
         theme.note(
             f"Upload up to {MAX_SOURCE_FILES} crochet pattern PDFs you already own. Every row, "
-            "stitch count, gauge and abbreviation is parsed out of them, then ChatGPT writes "
-            "complete, graded patterns from what they contain.",
+            "stitch count, gauge and abbreviation is parsed out of them, then Qwen writes "
+            "complete, graded patterns from what they contain. Ask for more patterns than you "
+            "upload and each one is given its own design direction.",
             "info",
         )
         uploads = st.file_uploader(
@@ -149,12 +152,12 @@ def _mode_inputs(mode: str) -> dict:
             theme.note(f"Only the first {MAX_SOURCE_FILES} files will be used.", "warn")
         if paths:
             _preview_sources(paths)
-        fragment.update(_batch_controls(paths, "pdfs"))
         fragment["brief"] = st.text_input(
             "Anything to add? (optional)",
             placeholder="Make it oversized with a deeper armhole",
             key="crochet_pdf_note",
         )
+        fragment.update(_batch_controls(paths, "pdfs", mode))
 
     elif mode == "from_etsy_data":
         theme.note(
@@ -178,7 +181,7 @@ def _mode_inputs(mode: str) -> dict:
             accept_multiple_files=True, key="crochet_etsy_files",
         )
         photo_files = col_b.file_uploader(
-            "Product photos (optional \u2014 ChatGPT reads them)",
+            "Product photos (optional \u2014 the vision model reads them)",
             type=["png", "jpg", "jpeg", "webp"], accept_multiple_files=True,
             key="crochet_etsy_photos",
         )
@@ -230,6 +233,7 @@ def _mode_inputs(mode: str) -> dict:
                     "free text needs one product per block with 'Label: value' lines.",
                     "warn",
                 )
+        fragment.update(_batch_controls([], "etsy", mode))
 
     elif mode == "from_brief":
         brief = st.text_input(
@@ -245,12 +249,13 @@ def _mode_inputs(mode: str) -> dict:
                 st.session_state["crochet_garment"] = garment
                 st.rerun()
         fragment["brief"] = brief
+        fragment.update(_batch_controls([], "brief", mode))
 
     elif mode == "from_photos":
         theme.note(
-            f"Upload up to {MAX_PHOTOS} photos of the finished piece. ChatGPT reads the stitch "
-            "pattern, the construction and the approximate gauge off the images, then writes the "
-            "pattern that reproduces it. This mode needs an OpenAI key.",
+            f"Upload up to {MAX_PHOTOS} photos of the finished piece. Qwen's vision model reads "
+            "the stitch pattern, the construction and the approximate gauge off the images, then "
+            "writes the pattern that reproduces it. This mode needs an API key.",
             "info",
         )
         uploads = st.file_uploader(
@@ -269,6 +274,7 @@ def _mode_inputs(mode: str) -> dict:
             placeholder="Worked top down, seamless, 5 mm hook",
             key="crochet_photo_note",
         )
+        fragment.update(_batch_controls(paths, "photos", mode))
 
     else:  # tech_pack
         theme.note(
@@ -282,46 +288,109 @@ def _mode_inputs(mode: str) -> dict:
             value=st.session_state.get("crochet_brief", "chunky waffle stitch throw"),
             key="crochet_tech_brief",
         )
+        fragment.update(_batch_controls([], "tech", mode))
 
     return fragment
 
 
-def _batch_controls(paths: list[str], key: str) -> dict:
-    """How many patterns to build, and how many uploads feed each one."""
-    if not paths:
-        return {"pattern_count": 1, "sources_per_pattern": 0}
+@st.cache_data(show_spinner=False)
+def _score_uploads(paths: tuple[str, ...]) -> list[dict]:
+    """Score uploads for the allocation preview, cached so reruns are cheap.
 
-    st.markdown("**How many patterns do you want from these files?**")
-    col_a, col_b = st.columns(2)
+    Parsing ten PDFs on every widget interaction would make the form crawl, and
+    the same files always score the same.
+    """
+    from artisan_forge.crochet.extract import extract_many
+
+    try:
+        return [score.to_dict() for score in batch_planner.score_sources(extract_many(list(paths)))]
+    except Exception:  # noqa: BLE001 - the preview is a nicety, not the build
+        return []
+
+
+def _batch_controls(paths: list[str], key: str, mode: str = "") -> dict:
+    """How many patterns to build, and how the sources are shared between them.
+
+    Shown in every mode. Without uploads there is nothing to allocate, so only
+    the count is asked for - each pattern still gets its own design direction,
+    which is what makes five patterns from one brief five different products.
+    """
+    st.markdown("**How many patterns should this run produce?**")
+    col_a, col_b = st.columns([1, 2])
     count = col_a.number_input(
         "Patterns to create",
-        min_value=1, max_value=min(MAX_PATTERNS_PER_RUN, max(len(paths), 1) * 2),
+        min_value=1, max_value=MAX_PATTERNS_PER_RUN,
         value=1, step=1, key=f"crochet_count_{key}",
-        help="Each pattern gets its own PDF, mockups, listing and ZIP.",
-    )
-    per = col_b.number_input(
-        "Source files per pattern (0 = split evenly)",
-        min_value=0, max_value=len(paths), value=0, step=1,
-        key=f"crochet_per_{key}",
-        help="0 shares all your uploads out evenly. Set 1 to build one pattern per file.",
+        help="Each pattern gets its own PDF, mockups, listing copy and ZIP.",
     )
 
-    groups = group_sources(paths, int(count), int(per))
-    rows = []
-    for index, group in enumerate(groups, start=1):
-        rows.append({
-            "Pattern": index,
-            "Built from": ", ".join(Path(p).name[:28] for p in group) or "-",
-            "Files": len(group),
-        })
-    st.dataframe(rows, use_container_width=True, hide_index=True,
-                 height=min(240, 40 + 35 * len(rows)))
+    strategy = DEFAULT_STRATEGY
+    per = 0
+    if paths:
+        options = list(ALLOCATION_STRATEGIES)
+        strategy = col_b.selectbox(
+            "How should your uploads be used?",
+            options,
+            index=options.index(DEFAULT_STRATEGY),
+            format_func=lambda k: ALLOCATION_STRATEGIES[k],
+            key=f"crochet_alloc_{key}",
+            help=(
+                "Auto reads your uploads and gives the richer ones more patterns. "
+                "Rebuild-each hands every pattern all of your files."
+            ),
+        )
+        if strategy == "fixed":
+            per = st.number_input(
+                "Source files per pattern",
+                min_value=1, max_value=len(paths), value=1, step=1,
+                key=f"crochet_per_{key}",
+            )
+    else:
+        col_b.caption(
+            "No uploads in this mode, so every pattern starts from the same brief - "
+            "each one is given a different design direction so they come out as "
+            "separate products."
+        )
+
+    scores = [
+        batch_planner.SourceScore(**row) for row in _score_uploads(tuple(paths))
+    ] if paths and strategy == "auto" else []
+
+    plans = batch_planner.fallback_plan(paths, int(count), strategy, scores, int(per))
+
+    if len(plans) > 1 or paths:
+        rows = []
+        for plan in plans:
+            rows.append({
+                "#": plan.index,
+                "Built from": plan.source_note
+                or (", ".join(Path(p).name[:24] for p in plan.sources) or "your brief"),
+                "Design direction": plan.direction[:88],
+            })
+        st.dataframe(
+            rows, use_container_width=True, hide_index=True,
+            height=min(320, 40 + 35 * len(rows)),
+        )
+
+    if scores and len(scores) > 1 and strategy == "auto":
+        best = max(scores, key=lambda s: s.score)
+        st.caption(
+            f"Auto ranked **{best.name}** highest ({best.reason}), so it earns more of the "
+            "patterns. With a key, the model reviews this allocation and can change it."
+        )
     if int(count) > 1:
+        extra = ""
+        if mode == "from_etsy_data":
+            extra = " Etsy mode walks forward through consecutive product numbers."
         st.caption(
             f"This run will build **{int(count)} separate patterns**, each with its own PDF, "
-            "listing images and Etsy copy."
+            f"listing images and Etsy copy.{extra}"
         )
-    return {"pattern_count": int(count), "sources_per_pattern": int(per)}
+    return {
+        "pattern_count": int(count),
+        "sources_per_pattern": int(per),
+        "allocation": strategy,
+    }
 
 
 def _market_inputs(key: str) -> dict:
@@ -455,15 +524,17 @@ def render(user: dict) -> None:
 
     if settings.ai_available:
         theme.note(
-            f"ChatGPT is on. Model chain: {', '.join(model_chain(settings)[:3])} "
-            "(first that answers wins).",
+            f"{settings.provider_label} is on. "
+            f"{short_model(settings.text_model)} writes the pattern, "
+            f"{short_model(settings.image_model)} renders the photography. "
+            f"Fallback chain: {', '.join(short_model(m) for m in model_chain(settings)[:3])}.",
             "ok",
         )
     else:
         theme.note(
-            "No OPENAI_API_KEY configured \u2014 patterns come from built-in templates and artwork "
-            "is painted locally. Everything still builds; add a key to have ChatGPT write the "
-            "pattern and read your photos.",
+            f"No {settings.key_env_var} configured \u2014 patterns come from built-in templates "
+            "and artwork is painted locally. Everything still builds; add a key to have "
+            f"{short_model(settings.text_model)} write the pattern and read your photos.",
             "info",
         )
     if not diagrams.available():
@@ -525,9 +596,9 @@ def render(user: dict) -> None:
             "Who is it for?", value="confident hobby crocheters", key="crochet_audience"
         )
         images = col_f.slider(
-            "Listing images", 0, 10, 0, key="crochet_images",
-            help="Etsy mockups composited from the PDF pages. 0 turns them off. "
-                 "They cost nothing but are the slowest part of a build.",
+            "Listing images", 0, 10, 8, key="crochet_images",
+            help="Etsy mockups composited from the PDF pages and the AI plates. "
+                 "0 turns them off. They cost nothing but are the slowest part of a build.",
         )
         if int(images) == 0:
             col_f.caption("Mockups off \u2014 PDF, diagrams and listing copy only.")
@@ -541,7 +612,7 @@ def render(user: dict) -> None:
         st.write("")
         st.markdown(
             "<div style='color:#9A9AAE;font-size:.84rem'>Canva has no text-to-image API, so the "
-            "flow is: ChatGPT writes the photo prompt \u2192 it is rendered \u2192 the render is "
+            "flow is: Qwen writes the photo prompt \u2192 Gemini renders it \u2192 the render is "
             "pushed to Canva as an editable design.</div>",
             unsafe_allow_html=True,
         )
@@ -600,14 +671,17 @@ def render(user: dict) -> None:
     )
 
     if not settings.ai_available:
-        st.caption("No OpenAI key configured, so this run is free (templates + local art).")
+        st.caption(
+            f"No {settings.key_env_var} configured, so this run is free "
+            "(templates + local art)."
+        )
     elif estimate <= 0:
         st.caption("This run makes no API calls, so it is free.")
     else:
         tone = "ok" if estimate < 0.10 else ("info" if estimate < 0.40 else "warn")
         detail = (
             f"{profile.plates} AI image(s) per pattern on "
-            f"`{profile.image_model}` at {profile.image_quality} quality"
+            f"`{short_model(settings.image_model_for_tier(profile.image_tier))}`"
             if profile.plates else "no AI images"
         )
         theme.note(

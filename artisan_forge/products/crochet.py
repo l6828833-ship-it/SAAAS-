@@ -2,23 +2,34 @@
 
 The five modes share a single pipeline. Only the *input* stage differs:
 
-    from_pdfs      upload up to 10 existing patterns -> parse them -> ChatGPT
-                   rebuilds one complete, graded pattern from what they contain
+    from_pdfs      upload up to 10 existing patterns -> parse them -> Qwen
+                   rebuilds complete, graded patterns from what they contain
     from_etsy_data paste your Etsy product data, give a product number, and the
                    pattern plus the full listing (title, tags, description) is
                    written from that product's own data and photos
     from_brief     describe the piece in a sentence and get a pattern
-    from_photos    upload photos of a finished piece and have ChatGPT read the
-                   stitch pattern and construction back off them
+    from_photos    upload photos of a finished piece and have the vision model
+                   read the stitch pattern and construction back off them
     tech_pack      diagrams, schematic and tech pack only - no AI calls, no cost
 
-Then every mode runs the same five stages:
+Then every mode runs the same stages, in this order:
 
     1. content extraction   -> crochet.extract
-    2. content expansion    -> crochet.expand   (ChatGPT, template fallback)
-    3. diagram generation   -> crochet.diagrams (matplotlib)
-    4. image prompts + art  -> crochet.imagery  (ChatGPT prompt -> render -> Canva)
-    5. layout and packaging -> crochet.pdf, mockups, Etsy copy, buyer ZIP
+    2. art direction        -> crochet.imagery  (Qwen designs the piece and
+                               writes one prompt per plate)
+    3. artwork              -> ai.image_client  (Gemini renders the plates)
+    4. content expansion    -> crochet.expand   (Qwen writes the pattern with
+                               the rendered plates attached as reference)
+    5. diagram generation   -> crochet.diagrams (matplotlib)
+    6. layout and packaging -> crochet.pdf, mockups, Etsy copy, buyer ZIP
+
+Art direction comes *before* the pattern text on purpose. The plates are what a
+buyer sees on the listing, so the instructions are written to match the
+photographs rather than the other way round.
+
+A batch is planned by `crochet.batch`: it decides how many patterns each upload
+earns and gives every pattern its own design direction, so five patterns from one
+PDF are five different products rather than five copies.
 
 With no API keys at all the studio still produces a complete document: the
 content comes from built-in templates and the artwork is painted locally.
@@ -36,8 +47,10 @@ from typing import Callable
 
 from ..ai.text_client import CopyStudio
 from ..config import Settings, get_settings
+from ..crochet import batch as batch_planner
 from ..crochet import diagrams as dgm
 from ..crochet import etsy_data, expand, imagery, market
+from ..crochet.batch import ALLOCATION_STRATEGIES, DEFAULT_STRATEGY
 from ..crochet.brand import BrandKit
 from ..crochet.extract import corpus_brief, extract_many, merge_sources
 from ..crochet.pdf import CrochetPDF
@@ -67,15 +80,25 @@ MAX_PHOTOS = 6
 MAX_PATTERNS_PER_RUN = 10
 
 # ------------------------------------------------------------------ cost model
-# Photographic plates are essentially the entire cost of a run: the pattern text
-# is a few thousand tokens (fractions of a cent), while one high-quality
-# gpt-image-1.5 render is around $0.19. So the cost modes differ almost entirely
-# in how many images they generate, at what quality, on which model.
+# Photographic plates are still the bulk of what a run costs, but the numbers
+# changed completely when the engine moved to Gemini. `gemini-2.5-flash-image` is
+# token-priced - about 1290 output tokens per picture at $2.50 per million, so
+# roughly $0.004 a plate against $0.133 for gpt-image-1.5 at high quality. A
+# whole photoshoot now costs less than a single old cover, which is why the plate
+# counts below are generous rather than rationed.
 #
-# Per-image prices below are OpenAI list prices for a 1024x1024 output, scaled
-# up by ~1.5x for portrait/landscape plates. They are used only to show an
-# estimate in the UI, so being slightly stale is harmless.
+# Prices are only used to show an estimate in the UI, so being slightly stale is
+# harmless.
 IMAGE_PRICE_USD: dict[tuple[str, str], float] = {
+    # Gemini: same price at every quality, because "quality" is not a parameter
+    # it takes - the bill is output tokens.
+    ("google-ai-studio/gemini-2.5-flash-image", "low"): 0.004,
+    ("google-ai-studio/gemini-2.5-flash-image", "medium"): 0.004,
+    ("google-ai-studio/gemini-2.5-flash-image", "high"): 0.004,
+    ("google-ai-studio/gemini-3.1-flash-image-preview", "low"): 0.006,
+    ("google-ai-studio/gemini-3.1-flash-image-preview", "medium"): 0.006,
+    ("google-ai-studio/gemini-3.1-flash-image-preview", "high"): 0.006,
+    # OpenAI list prices for a 1024x1024 output, if the provider is switched back.
     ("gpt-image-1.5", "low"): 0.009,
     ("gpt-image-1.5", "medium"): 0.034,
     ("gpt-image-1.5", "high"): 0.133,
@@ -83,10 +106,20 @@ IMAGE_PRICE_USD: dict[tuple[str, str], float] = {
     ("gpt-image-1-mini", "medium"): 0.011,
     ("gpt-image-1-mini", "high"): 0.052,
 }
+# Models billed per token rather than per picture. Aspect ratio changes the
+# pixel count but not the token count, so the non-square surcharge is an
+# OpenAI-only concept.
+TOKEN_PRICED_PREFIXES = ("google-ai-studio/", "openai/gpt-image")
 # Non-square plates cost roughly half again as much as a square one.
 NON_SQUARE_FACTOR = 1.5
-# A pattern run is a couple of chat calls of a few thousand tokens.
-TEXT_COST_USD = {"cheap": 0.002, "default": 0.02}
+# Qwen3-14B at $0.12 in / $0.24 out. A pattern is ~1.5k in and ~6k out, and a
+# run makes three calls (art direction, the pattern itself, the listing pass).
+TEXT_COST_USD = {"cheap": 0.005, "default": 0.008}
+
+
+def _tier_model(tier: str) -> str | None:
+    """The concrete image model a cost tier means for the configured provider."""
+    return get_settings().image_model_for_tier(tier)
 
 
 @dataclass(frozen=True)
@@ -100,12 +133,17 @@ class CostProfile:
     image_quality: str = "low"
     cheap_text: bool = True
     note: str = ""
+    # Which model tier this profile wants, resolved against the live settings at
+    # build time. `image_model` above is the same thing frozen at import, kept
+    # for the price lookup and the UI label.
+    image_tier: str = "cheap"
 
     def image_cost(self) -> float:
         if not self.image_model or self.plates <= 0:
             return 0.0
         unit = IMAGE_PRICE_USD.get((self.image_model, self.image_quality), 0.05)
-        return self.plates * unit * NON_SQUARE_FACTOR
+        factor = 1.0 if self.image_model.startswith(TOKEN_PRICED_PREFIXES) else NON_SQUARE_FACTOR
+        return self.plates * unit * factor
 
     def text_cost(self) -> float:
         return TEXT_COST_USD["cheap" if self.cheap_text else "default"]
@@ -113,37 +151,52 @@ class CostProfile:
     def estimate(self, pattern_count: int = 1, shared_art: bool = False) -> float:
         """Estimated USD for a whole run.
 
-        With `shared_art` the photographic plates are generated once and reused
-        across the batch, so only the text scales with the number of patterns.
+        With `shared_art` the generic photographic plates are generated once and
+        reused across the batch, so only the text scales with the pattern count.
         """
         count = max(1, pattern_count)
         images = self.image_cost() * (1 if shared_art else count)
         return round(images + self.text_cost() * count, 4)
 
 
+# Plate counts are sized around what a listing actually needs: a cover, about
+# three interior photos for the PDF, and enough remaining shots to carry the
+# Etsy gallery. `free` still produces a complete product - every technical
+# diagram is drawn locally, so only the photography is missing.
 COST_PROFILES: dict[str, CostProfile] = {
     "free": CostProfile(
-        key="free", label="Free art", plates=0, image_model=None,
-        note="Artwork is painted locally. ChatGPT still writes the pattern.",
+        key="free", label="Free art", plates=0, image_model=None, image_tier="none",
+        note="Artwork is painted locally. Qwen still writes the whole pattern.",
     ),
     "lean": CostProfile(
-        key="lean", label="One cover image", plates=1,
-        image_model="gpt-image-1-mini", image_quality="medium",
-        note="A single AI cover photo, which is also the hero listing image. "
-             "Every diagram is still drawn locally at no cost.",
+        key="lean", label="Cover + 3 interior photos", plates=4,
+        image_model=_tier_model("cheap"), image_quality="medium", image_tier="cheap",
+        note="A cover plus the three photos the PDF pages want. Every diagram is "
+             "still drawn locally at no cost.",
     ),
     "standard": CostProfile(
-        key="standard", label="Cover + interior photos", plates=3,
-        image_model="gpt-image-1-mini", image_quality="medium",
-        note="Cover, finished-item and materials photos.",
+        key="standard", label="Full listing set", plates=8,
+        image_model=_tier_model("cheap"), image_quality="medium", image_tier="cheap",
+        note="Cover, interior photos and enough styled shots to fill the Etsy "
+             "gallery without repeating a scene.",
     ),
     "premium": CostProfile(
-        key="premium", label="Premium", plates=5, image_model="gpt-image-1.5",
-        image_quality="high", cheap_text=False,
-        note="Five plates on the best image model. This is the expensive one.",
+        key="premium", label="Premium photoshoot", plates=12,
+        image_model=_tier_model("best"), image_quality="high", cheap_text=False,
+        image_tier="best",
+        note="Twelve distinct plates on the best image model, and the pattern "
+             "written without the cheap-text shortcut.",
     ),
 }
+# "lean" is the default because it is exactly the PDF's own shot list - a cover
+# plus the three interior photos. The listing gallery is filled by the free local
+# mockup composites, so most runs do not need to buy gallery plates as well.
 DEFAULT_COST_MODE = "lean"
+
+def short_model(model: str | None) -> str:
+    """`google-ai-studio/gemini-2.5-flash-image` -> `gemini-2.5-flash-image`."""
+    return str(model or "").rsplit("/", 1)[-1]
+
 
 # Human-readable dropdown labels, with the estimated price baked in. Sub-cent
 # estimates are shown to three decimals so "free" and "lean" are distinguishable.
@@ -151,9 +204,9 @@ COST_MODES: dict[str, str] = {
     key: (
         f"{profile.label} \u2014 "
         + (
-            f"{profile.plates} image on {profile.image_model}"
+            f"{profile.plates} image on {short_model(profile.image_model)}"
             if profile.plates == 1 else
-            f"{profile.plates} images on {profile.image_model}"
+            f"{profile.plates} images on {short_model(profile.image_model)}"
             if profile.plates else "no AI images"
         )
         + (
@@ -191,10 +244,19 @@ class CrochetSpec:
     product_number: int = 1
     image_dir: str | None = None
 
-    # batch: how many separate patterns to build, and how many of the uploaded
-    # files feed each one. 0 sources_per_pattern means "split the uploads evenly".
+    # batch: how many separate patterns to build, and how the uploads are shared
+    # out between them. `allocation` is the strategy - see crochet.batch. With
+    # "fixed", `sources_per_pattern` is how many files each pattern reads.
     pattern_count: int = 1
     sources_per_pattern: int = 0
+    allocation: str = DEFAULT_STRATEGY
+
+    # Set by the batch planner on each child spec, never by the UI. This is what
+    # makes pattern 3 of 5 a different product rather than a third copy.
+    variant_index: int = 1
+    variant_total: int = 1
+    variant_direction: str = ""
+    variant_title_hint: str = ""
 
     # market research: a competitor scrape (JSON / JSONL / CSV / XLSX) used to
     # pick the title, tags, description and price from real demand signals.
@@ -390,6 +452,10 @@ def validate(spec: CrochetSpec) -> CrochetSpec:
     spec.bleed_in = max(0.0, min(0.25, spec.bleed_in))
     spec.pattern_count = max(1, min(MAX_PATTERNS_PER_RUN, spec.pattern_count))
     spec.sources_per_pattern = max(0, min(MAX_SOURCE_FILES, spec.sources_per_pattern))
+    if spec.allocation not in ALLOCATION_STRATEGIES:
+        spec.allocation = DEFAULT_STRATEGY
+    spec.variant_total = max(1, int(spec.variant_total))
+    spec.variant_index = max(1, min(spec.variant_total, int(spec.variant_index)))
     spec.market_files = [f for f in spec.market_files if Path(f).exists()][:20]
     spec.sizes = [str(s).strip().upper() for s in spec.sizes if str(s).strip()][:10]
     spec.brand = spec.brand.cleaned()
@@ -833,7 +899,9 @@ def build_crochet(
     spec = validate(spec)
     profile = spec.profile
     settings = settings.tuned(
-        image_model=profile.image_model,
+        # Resolve the tier against the live settings rather than trusting the
+        # id frozen into the profile at import, so the provider stays consistent.
+        image_model=settings.image_model_for_tier(profile.image_tier),
         image_quality=profile.image_quality,
         cheap_text=profile.cheap_text,
     )
@@ -859,8 +927,6 @@ def build_crochet(
     inputs = _gather(spec, run_dir, result.warnings)
     garment = inputs["garment"] or "crochet piece"
 
-    # 2. expansion
-    report("Writing the pattern with ChatGPT", 0.14)
     fallback = expand.template_pattern(
         garment=garment,
         title=spec.title or inputs["default_title"] or "",
@@ -869,6 +935,67 @@ def build_crochet(
         designer=spec.brand.credit,
     )
     writer = CopyStudio(settings, offline=None if spec.generate_ai_copy else True)
+    brand_note = f"SHOP: {spec.brand.shop}. {spec.brand.tagline}".strip()
+    # Later patterns in a batch are asked for at a higher temperature: the source
+    # material is identical, so sampling is part of what keeps them apart.
+    variant_heat = None if spec.variant_total <= 1 else min(1.0, 0.5 + 0.1 * spec.variant_index)
+
+    # 2. art direction - the design and the photo prompts, before any pattern text.
+    # Doing this first means the plates can be handed to the writer as reference,
+    # so the instructions and the listing photographs describe the same object.
+    report("Designing the piece and writing the image prompts", 0.12)
+    design, briefs, plan_warnings = imagery.plan_art(
+        writer if spec.generate_ai_copy else None,
+        inputs["brief"],
+        garment,
+        fallback.get("image_briefs") or [],
+        plate_count=spec.plate_limit,
+        brand_note=brand_note,
+        variation=spec.variant_direction,
+        temperature=variant_heat,
+    )
+    result.warnings.extend(plan_warnings)
+    if design.get("garment"):
+        garment = design["garment"]
+
+    # 3. imagery, then Canva. Rendered here so the plates exist before the text.
+    report("Rendering the artwork", 0.2)
+    art = imagery.build_imagery(
+        fallback,
+        garment,
+        art_dir,
+        theme_key=spec.theme,
+        settings=settings,
+        generate_art=spec.generate_ai_art,
+        use_canva=spec.use_canva,
+        canva_pull_back=spec.canva_pull_back,
+        plate_limit=spec.plate_limit,
+        writer=None,          # art direction already ran, above
+        briefs=briefs,
+        brand_note=brand_note,
+        progress=None if progress is None else (
+            lambda message, fraction: report(message, 0.2 + 0.18 * fraction)
+        ),
+    )
+    result.warnings.extend(art["warnings"])
+    result.art_paths = dict(art["plates"])
+    result.art_source = art["source"]
+    result.canva = art["canva"]
+    billed_images = int(art.get("generated", 0))
+    cached_images = int(art.get("cache_hits", 0))
+
+    # 4. expansion - write the pattern against the artwork that now exists.
+    report("Writing the pattern with Qwen", 0.4)
+    # The rendered plates become the visual reference. Only the plates that show
+    # the object itself are worth attaching; a yarn flat-lay teaches the model
+    # nothing about construction, and vision tokens are not free.
+    reference_images = [
+        str(path)
+        for slot, path in art["plates"].items()
+        if slot in ("cover", "finished", "texture", "detail", "flat") and Path(path).exists()
+    ][:4]
+    # In photo mode the user's own photographs are the ground truth, so those win.
+    attached = list(inputs["photos"]) or (reference_images if spec.generate_ai_art else [])
     pattern = fallback
     if spec.generate_ai_copy:
         prompt = expand.content_prompt(
@@ -879,47 +1006,32 @@ def build_crochet(
             tone=spec.tone,
             designer=spec.brand.credit,
             extra_instructions=inputs["extra_instructions"],
+            variation=spec.variant_direction,
+            design=imagery.design_brief_text(design),
+            has_reference_images=bool(attached),
+            batch_position=(spec.variant_index, spec.variant_total),
         )
-        raw = writer.ask_json(prompt, images=inputs["photos"] or None)
+        raw = writer.ask_json(prompt, images=attached or None, temperature=variant_heat)
         if raw:
             pattern = expand.normalise_pattern(raw, fallback)
         result.warnings.extend(writer.warnings)
     content_source = writer.source
     pattern = expand.ensure_stitch_counts(pattern)
+    # Title precedence: an explicit spec title, then whatever the planner named
+    # this variant, then whatever the writer chose.
     if spec.title:
         pattern["title"] = spec.title
+    elif spec.variant_title_hint and not spec.variant_title_hint.isspace():
+        pattern["title"] = spec.variant_title_hint
+    # The captions were written for these plates, so carry them across.
+    pattern["image_briefs"] = briefs
 
-    # 3. diagrams
-    report("Drawing the technical diagrams", 0.34)
+    # 5. diagrams
+    report("Drawing the technical diagrams", 0.56)
     diagram_plates, diagram_warnings = dgm.build_all(pattern, diagram_dir, theme)
     result.warnings.extend(diagram_warnings)
 
-    # 4. imagery, then Canva
-    report("Writing image prompts and rendering artwork", 0.44)
-    art = imagery.build_imagery(
-        pattern,
-        garment,
-        art_dir,
-        theme_key=spec.theme,
-        settings=settings,
-        generate_art=spec.generate_ai_art,
-        use_canva=spec.use_canva,
-        canva_pull_back=spec.canva_pull_back,
-        plate_limit=spec.plate_limit,
-        writer=writer if spec.generate_ai_copy else None,
-        brand_note=f"SHOP: {spec.brand.shop}. {spec.brand.tagline}".strip(),
-        progress=None if progress is None else (
-            lambda message, fraction: report(message, 0.44 + 0.16 * fraction)
-        ),
-    )
-    result.warnings.extend(art["warnings"])
-    result.art_paths = dict(art["plates"])
-    result.art_source = art["source"]
-    result.canva = art["canva"]
-    billed_images = int(art.get("generated", 0))
-    cached_images = int(art.get("cache_hits", 0))
-
-    # 5. layout
+    # 6. layout
     report("Laying out the pattern", 0.62)
     # Name the files after the pattern we actually produced, not the spec: in a
     # batch every pattern would otherwise land on the same filename.
@@ -1036,16 +1148,27 @@ def build_crochet(
         "art_source": result.art_source,
         "cost": {
             "mode": spec.cost_mode,
-            "image_model": profile.image_model,
+            "provider": settings.provider,
+            "image_model": settings.image_model,
             "image_quality": profile.image_quality,
+            "text_model": settings.text_model,
             "images_billed": billed_images,
             "images_from_cache": cached_images,
             "estimated_usd": round(
                 billed_images * IMAGE_PRICE_USD.get(
-                    (profile.image_model or "", profile.image_quality), 0.0
-                ) * NON_SQUARE_FACTOR + profile.text_cost(),
+                    (settings.image_model, profile.image_quality), 0.0
+                ) * (
+                    1.0 if settings.image_model.startswith(TOKEN_PRICED_PREFIXES)
+                    else NON_SQUARE_FACTOR
+                ) + profile.text_cost(),
                 4,
             ),
+        },
+        "design": design,
+        "variant": {
+            "index": spec.variant_index,
+            "total": spec.variant_total,
+            "direction": spec.variant_direction,
         },
         "pattern": pattern,
         "sources": inputs["sources"],
@@ -1085,40 +1208,74 @@ def build_crochet_batch(
 ) -> list[BuildResult]:
     """Build `spec.pattern_count` separate patterns in one run.
 
-    Each pattern gets its own run folder, PDF, mockups, listing and ZIP, so four
-    uploaded source files can become four distinct products rather than being
-    merged into one. `group_sources()` decides which uploads feed which pattern.
+    Each pattern gets its own run folder, PDF, mockups, listing and ZIP, so one
+    uploaded file can become five distinct products rather than one, and two
+    uploaded files asked for five patterns are shared out by how much material
+    each actually contains. `crochet.batch.plan_batch` makes that call, and also
+    assigns each pattern the design direction that keeps it distinct.
 
     A failure in one pattern does not abandon the others: the exception is
-    recorded on the next successful result's warnings and the batch continues.
+    recorded on the first successful result's warnings and the batch continues.
     Raises only if *every* pattern failed.
     """
     settings = settings or get_settings()
     spec = validate(spec)
 
-    if spec.pattern_count <= 1:
+    single = spec.pattern_count <= 1 and spec.allocation != "one_per_source"
+    if single:
         return [build_crochet(spec, out_dir=out_dir, progress=progress, settings=settings)]
 
-    # Only the upload-driven mode can be meaningfully split by source file.
-    groups: list[list[str]]
-    if spec.mode in ("from_pdfs", "from_photos") and spec.source_files:
-        groups = group_sources(spec.source_files, spec.pattern_count, spec.sources_per_pattern)
+    if progress:
+        progress("Planning the batch", 0.01)
+
+    # Score the uploads so the allocation reflects what is actually in them. Only
+    # text sources can be scored; photo uploads carry no extractable pattern.
+    scores: list[batch_planner.SourceScore] = []
+    corpus_summary = spec.brief.strip()
+    if spec.mode == "from_pdfs" and spec.source_files:
+        try:
+            extracted = extract_many(spec.source_files)
+            scores = batch_planner.score_sources(extracted)
+            merged = merge_sources([s for s in extracted if s.ok])
+            if merged.get("sources"):
+                corpus_summary = corpus_brief(merged, limit=4000)
+        except Exception as exc:  # noqa: BLE001 - fall back to an even split
+            corpus_summary = spec.brief.strip()
+            scores = []
+            planner_note = f"Could not score the uploads ({type(exc).__name__}: {exc})"
+        else:
+            planner_note = ""
     else:
-        groups = [list(spec.source_files) for _ in range(spec.pattern_count)]
+        planner_note = ""
+
+    planner = CopyStudio(settings, offline=None if spec.generate_ai_copy else True)
+    plans, plan_warnings = batch_planner.plan_batch(
+        spec.source_files,
+        spec.pattern_count,
+        strategy=spec.allocation,
+        scores=scores,
+        sources_per_pattern=spec.sources_per_pattern,
+        writer=planner,
+        corpus_brief=corpus_summary,
+        garment=spec.garment,
+    )
+    if planner_note:
+        plan_warnings.append(planner_note)
+    plan_warnings.extend(planner.warnings)
 
     base_dir = Path(out_dir) if out_dir else None
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
-    total = len(groups)
+    total = len(plans)
     results: list[BuildResult] = []
     failures: list[str] = []
 
-    # Batch cost is kept down by the image cache rather than by copying files
-    # around: the generic plates (materials flat-lay, stitch texture) describe
-    # the yarn rather than the garment, so their prompts hash identically across
-    # the batch and only the first pattern pays for them. Covers stay per-pattern,
-    # because a beanie should not ship with a cardigan on the front.
+    # Batch cost stays low because of the image cache: the generic plates (yarn
+    # flat-lay, stitch texture) describe the yarn rather than the garment, so
+    # their prompts hash identically across the batch and only the first pattern
+    # pays for them. Covers stay per-pattern, because a beanie should not ship
+    # with a cardigan on the front.
 
-    for index, group in enumerate(groups):
+    for index, plan in enumerate(plans):
         label = f"Pattern {index + 1} of {total}"
 
         def sub_progress(message: str, fraction: float, _i=index) -> None:
@@ -1126,17 +1283,22 @@ def build_crochet_batch(
                 span = 1.0 / total
                 progress(f"[{_i + 1}/{total}] {message}", span * (_i + fraction))
 
-        # Each pattern is its own spec: same settings, its own slice of sources.
+        # Each pattern is its own spec: same settings, its own sources, and its
+        # own design direction - which is what makes it a separate product.
         child = dataclasses.replace(
             spec,
-            source_files=group,
+            source_files=list(plan.sources),
             pattern_count=1,
+            variant_index=index + 1,
+            variant_total=total,
+            variant_direction=plan.direction,
+            variant_title_hint=plan.title_hint,
+            # An explicit title would override every variant with the same name.
+            title=spec.title if total == 1 else None,
             # Etsy mode walks through consecutive products instead of files.
             product_number=(
                 spec.product_number + index if spec.mode == "from_etsy_data" else spec.product_number
             ),
-            # After the first pattern the plates are already in the prompt cache,
-            # so later patterns cost nothing for artwork.
             share_art=spec.share_art,
         )
 
@@ -1156,7 +1318,9 @@ def build_crochet_batch(
         except Exception as exc:  # noqa: BLE001 - keep building the rest of the batch
             failures.append(f"{label}: {type(exc).__name__}: {exc}")
             continue
-        result.warnings.append(f"{label} of {total} in this batch")
+        result.warnings.append(f"{label} in this batch")
+        if plan.source_note:
+            result.warnings.append(f"{label} was built from {plan.source_note}")
         results.append(result)
 
     if not results:
@@ -1165,6 +1329,8 @@ def build_crochet_batch(
         )
     if failures:
         results[0].warnings.extend(failures)
+    if plan_warnings:
+        results[0].warnings.extend(plan_warnings)
     if progress:
         progress(f"Done - {len(results)} pattern(s) built", 1.0)
     return results

@@ -16,6 +16,61 @@ except Exception:  # pragma: no cover - dotenv is a convenience only
 ROOT = Path(__file__).resolve().parent.parent
 ASSETS_DIR = ROOT / "assets"
 
+# --------------------------------------------------------------- AI providers
+# Everything talks OpenAI's Chat Completions shape, so a provider is really just
+# a base URL, a key and a set of model ids. Inworld's Router is the default: one
+# key reaches Qwen for the writing and Gemini for the artwork, at a fraction of
+# what the OpenAI models cost.
+PROVIDERS = ("inworld", "openai")
+DEFAULT_PROVIDER = "inworld"
+
+BASE_URLS = {
+    "inworld": "https://api.inworld.ai/v1",
+    "openai": "https://api.openai.com/v1",
+}
+
+# Inworld Router model ids are "provider/model". Prices are per million tokens.
+#
+#   deepinfra/Qwen/Qwen3-14B                      $0.12 in / $0.24 out
+#   deepinfra/Qwen/Qwen3-32B                      $0.08 in / $0.28 out
+#   deepinfra/Qwen/Qwen3-VL-30B-A3B-Instruct      $0.15 in / $0.60 out
+#   google-ai-studio/gemini-2.5-flash-image       $0.30 in / $2.50 out
+#
+# Qwen3-14B writes the patterns and the listing copy. A pattern run is roughly
+# 1.5k input and 6k output tokens, so about $0.0016 each - text cost is noise
+# next to the artwork. Qwen3-14B has no vision, so anything with pictures
+# attached (uploaded photos, or the Gemini plates fed back in) is routed to the
+# VL model instead; the text client switches automatically.
+MODEL_DEFAULTS = {
+    "inworld": {
+        "text": "deepinfra/Qwen/Qwen3-14B",
+        "cheap_text": "deepinfra/Qwen/Qwen3-14B",
+        "vision": "deepinfra/Qwen/Qwen3-VL-30B-A3B-Instruct",
+        "image": "google-ai-studio/gemini-2.5-flash-image",
+        "cheap_image": "google-ai-studio/gemini-2.5-flash-image",
+    },
+    "openai": {
+        # empty text model means "use the built-in fallback chain"
+        "text": "",
+        "cheap_text": "gpt-4o-mini",
+        "vision": "",
+        "image": "gpt-image-1.5",
+        "cheap_image": "gpt-image-1-mini",
+    },
+}
+
+# How images are asked for. Gemini is a multimodal chat model, so its renders
+# come back from /chat/completions; the OpenAI image models have their own
+# /images/generations endpoint.
+IMAGE_APIS = {"inworld": "chat", "openai": "images"}
+
+
+def _provider() -> str:
+    """Which gateway to talk to. Unknown names fall back to the default."""
+    name = _clean("AF_AI_PROVIDER", DEFAULT_PROVIDER).lower()
+    return name if name in PROVIDERS else DEFAULT_PROVIDER
+
+
 
 def _flag(name: str, default: bool = False) -> bool:
     raw = os.getenv(name)
@@ -43,20 +98,29 @@ def _clean(name: str, default: str = "") -> str:
 class Settings:
     """Resolved settings. Read once per process, cheap to rebuild."""
 
+    # Which gateway, and the credentials for it. Inworld reaches Qwen and Gemini
+    # through one OpenAI-compatible endpoint; "openai" keeps the original wiring.
+    provider: str = field(default_factory=_provider)
+    inworld_api_key: str | None = field(default_factory=lambda: _clean("INWORLD_API_KEY") or None)
     openai_api_key: str | None = field(default_factory=lambda: _clean("OPENAI_API_KEY") or None)
-    image_model: str = field(default_factory=lambda: _clean("AF_IMAGE_MODEL", "gpt-image-1.5"))
+    base_url: str = field(default_factory=lambda: _clean("AF_AI_BASE_URL"))
+
+    image_model: str = field(default_factory=lambda: _clean("AF_IMAGE_MODEL"))
     image_quality: str = field(default_factory=lambda: _clean("AF_IMAGE_QUALITY", "high"))
     text_model: str = field(default_factory=lambda: _clean("AF_TEXT_MODEL"))
+    # Used instead of `text_model` whenever reference photographs are attached:
+    # the strongest text Qwen cannot see images, the VL one can.
+    vision_model: str = field(default_factory=lambda: _clean("AF_VISION_MODEL"))
     force_offline: bool = field(default_factory=lambda: _flag("AF_OFFLINE"))
     output_dir: Path = field(default_factory=lambda: Path(os.getenv("AF_OUTPUT_DIR", "output")))
 
     # Cheaper stand-ins used by "lean" cost modes. See `lean()`.
-    cheap_text_model: str = field(
-        default_factory=lambda: _clean("AF_TEXT_MODEL_CHEAP", "gpt-4o-mini")
-    )
-    cheap_image_model: str = field(
-        default_factory=lambda: _clean("AF_IMAGE_MODEL_CHEAP", "gpt-image-1-mini")
-    )
+    cheap_text_model: str = field(default_factory=lambda: _clean("AF_TEXT_MODEL_CHEAP"))
+    cheap_image_model: str = field(default_factory=lambda: _clean("AF_IMAGE_MODEL_CHEAP"))
+
+    # "chat" asks a multimodal chat model for a picture (Gemini), "images" posts
+    # to a dedicated image endpoint (OpenAI). Normally left to the provider.
+    image_api: str = field(default_factory=lambda: _clean("AF_IMAGE_API"))
 
     # Generated images are cached by prompt hash, so rebuilding a product with
     # the same brief costs nothing. Images dominate the cost of a run.
@@ -86,10 +150,58 @@ class Settings:
         default_factory=lambda: _clean("CANVA_REFRESH_TOKEN") or None
     )
 
+    def __post_init__(self) -> None:
+        """Fill in whatever the environment did not pin, per provider.
+
+        Only empty values are filled, so `replace()`-derived copies (see `lean()`
+        and `tuned()`) keep the models their caller chose.
+        """
+        if self.provider not in PROVIDERS:
+            self.provider = DEFAULT_PROVIDER
+        defaults = MODEL_DEFAULTS[self.provider]
+        self.base_url = (self.base_url or BASE_URLS[self.provider]).rstrip("/")
+        self.image_model = self.image_model or defaults["image"]
+        self.cheap_image_model = self.cheap_image_model or defaults["cheap_image"]
+        self.cheap_text_model = self.cheap_text_model or defaults["cheap_text"]
+        self.vision_model = self.vision_model or defaults["vision"]
+        self.image_api = self.image_api or IMAGE_APIS[self.provider]
+        # `text_model` is deliberately allowed to stay empty: an empty value means
+        # "use the built-in fallback chain", which the text client owns.
+        if not self.text_model:
+            self.text_model = defaults["text"]
+
+    @property
+    def api_key(self) -> str | None:
+        """The credential for the configured gateway.
+
+        Inworld falls back to an OpenAI key so an existing .env keeps working if
+        the provider is switched back, and vice versa.
+        """
+        if self.provider == "inworld":
+            return self.inworld_api_key or None
+        return self.openai_api_key or None
+
+    @property
+    def provider_label(self) -> str:
+        return {"inworld": "Inworld", "openai": "OpenAI"}.get(self.provider, self.provider)
+
+    @property
+    def key_env_var(self) -> str:
+        """The environment variable a user needs to set. Used in UI messages."""
+        return "INWORLD_API_KEY" if self.provider == "inworld" else "OPENAI_API_KEY"
+
     @property
     def ai_available(self) -> bool:
-        """True when real AI image generation can run."""
-        return bool(self.openai_api_key) and not self.force_offline
+        """True when real AI generation can run."""
+        return bool(self.api_key) and not self.force_offline
+
+    def image_model_for_tier(self, tier: str) -> str | None:
+        """Resolve a cost tier ("none" / "cheap" / "best") to a concrete model."""
+        if tier == "none":
+            return None
+        if tier == "cheap":
+            return self.cheap_image_model or self.image_model
+        return self.image_model
 
     @property
     def canva_available(self) -> bool:
