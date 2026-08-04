@@ -112,9 +112,10 @@ IMAGE_PRICE_USD: dict[tuple[str, str], float] = {
 TOKEN_PRICED_PREFIXES = ("google-ai-studio/", "openai/gpt-image")
 # Non-square plates cost roughly half again as much as a square one.
 NON_SQUARE_FACTOR = 1.5
-# Qwen3-14B at $0.12 in / $0.24 out. A pattern is ~1.5k in and ~6k out, and a
-# run makes three calls (art direction, the pattern itself, the listing pass).
-TEXT_COST_USD = {"cheap": 0.005, "default": 0.008}
+# Qwen3-VL-30B at $0.15 in / $0.60 out. A pattern is ~2k in and ~6k out, and a
+# run makes three calls (art direction, the pattern itself, the listing pass),
+# with the plates attached to the middle one.
+TEXT_COST_USD = {"cheap": 0.012, "default": 0.015}
 
 
 def _tier_model(tier: str) -> str | None:
@@ -257,6 +258,9 @@ class CrochetSpec:
     variant_total: int = 1
     variant_direction: str = ""
     variant_title_hint: str = ""
+    # One-word tag for this variant ("Cropped", "Chunky"). Used to keep the
+    # titles in a batch apart when the writer names them all the same thing.
+    variant_label: str = ""
 
     # market research: a competitor scrape (JSON / JSONL / CSV / XLSX) used to
     # pick the title, tags, description and price from real demand signals.
@@ -1016,13 +1020,22 @@ def build_crochet(
             pattern = expand.normalise_pattern(raw, fallback)
         result.warnings.extend(writer.warnings)
     content_source = writer.source
-    pattern = expand.ensure_stitch_counts(pattern)
+    # Tidy before the counts table is derived, so the table is built from real
+    # rows rather than from a count the model stamped on a blocking step.
+    pattern = expand.ensure_stitch_counts(expand.tidy_steps(pattern))
     # Title precedence: an explicit spec title, then whatever the planner named
     # this variant, then whatever the writer chose.
     if spec.title:
         pattern["title"] = spec.title
     elif spec.variant_title_hint and not spec.variant_title_hint.isspace():
         pattern["title"] = spec.variant_title_hint
+    # Last resort in a batch: tag the title with this variant's direction. The
+    # file names come off the title, so this also stops two patterns in a batch
+    # writing to the same PDF name.
+    if spec.variant_label and spec.variant_total > 1 and not spec.title:
+        current = str(pattern.get("title") or "").strip()
+        if spec.variant_label.lower() not in current.lower():
+            pattern["title"] = f"{spec.variant_label} {current}".strip()[:60]
     # The captions were written for these plates, so carry them across.
     pattern["image_briefs"] = briefs
 
@@ -1076,7 +1089,7 @@ def build_crochet(
         report("Skipping listing images", 0.9)
 
     # 7. packaging - market research first, so the listing is keyword-led
-    report("Analysing market data and writing listing copy", 0.9)
+    report("Reading the market data", 0.90)
     market_listings, market_warnings = market.load_market_data(
         spec.market_text, spec.market_files
     )
@@ -1091,6 +1104,7 @@ def build_crochet(
         " ".join((pattern.get("sizes") or {}).get("labels") or []),
         spec.garment,
     ] if part)
+    report(f"Ranking tags against {len(market_listings)} listings", 0.92)
     market_report = market.analyse(market_listings, market_warnings, relevance=relevance)
 
     listing = listing_from_pattern(spec, pattern, inputs["product"], market_report)
@@ -1100,6 +1114,7 @@ def build_crochet(
     # is where the money is, and it is much better done as its own pass than
     # bolted onto the end of the pattern-writing prompt.
     if market_report.listings and spec.generate_ai_copy:
+        report("Writing the Etsy listing copy", 0.94)
         seo_writer = CopyStudio(settings, offline=None)
         try:
             answer = seo_writer.ask_json(
@@ -1117,6 +1132,7 @@ def build_crochet(
             listing_source = seo_writer.source
 
     result.listing_copy = listing
+    report("Packaging the download files", 0.96)
     write_copy(listing, run_dir)
     docs = write_product_docs(
         str(pattern.get("title") or spec.display_title()),
@@ -1266,6 +1282,11 @@ def build_crochet_batch(
     base_dir = Path(out_dir) if out_dir else None
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
     total = len(plans)
+    # Tag the titles only when several patterns read the same material. One
+    # pattern per upload already gets its name from its own source; five
+    # patterns off one PDF do not, and would otherwise share a title and a
+    # filename.
+    label_titles = len({tuple(plan.sources) for plan in plans}) < total
     results: list[BuildResult] = []
     failures: list[str] = []
 
@@ -1293,6 +1314,7 @@ def build_crochet_batch(
             variant_total=total,
             variant_direction=plan.direction,
             variant_title_hint=plan.title_hint,
+            variant_label=batch_planner.label_for(index + 1, total) if label_titles else "",
             # An explicit title would override every variant with the same name.
             title=spec.title if total == 1 else None,
             # Etsy mode walks through consecutive products instead of files.
