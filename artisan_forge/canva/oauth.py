@@ -31,7 +31,7 @@ import urllib.request
 AUTHORIZE_URL = "https://www.canva.com/api/oauth/authorize"
 TOKEN_URL = "https://api.canva.com/rest/v1/oauth/token"
 
-SCOPES = ("asset:write", "design:content:write", "design:content:read")
+SCOPES = ("asset:read", "asset:write", "design:content:write", "design:content:read")
 
 
 class CanvaOAuthError(RuntimeError):

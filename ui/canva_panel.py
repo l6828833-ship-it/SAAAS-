@@ -191,8 +191,11 @@ def try_refresh() -> bool:
 
 
 def _redirect_uri() -> str:
-    """The redirect URL for the OAuth flow - must match what's in Canva's portal."""
+    """The redirect URL for the OAuth flow - must match what's in Canva's portal exactly."""
     settings = get_settings()
-    # Use the Etsy redirect URI as the base (it's already the app's public URL)
+    # Use the same base URL the app is deployed at (shared with Etsy callback)
     base = settings.etsy_redirect_uri or "http://localhost:8501"
+    # Canva requires the trailing slash if that's what was registered
+    if not base.endswith("/"):
+        base += "/"
     return base
