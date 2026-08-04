@@ -18,3 +18,6 @@ cryptography==50.0.0
 
 # --- HTTP (used by the optional Canva Connect client) ---
 requests==2.32.3
+
+# --- Excel market-research uploads (optional: CSV/JSON work without it) ---
+openpyxl==3.1.5

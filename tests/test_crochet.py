@@ -766,3 +766,499 @@ def test_lean_cost_mode_uses_the_cheap_model_tier(tmp_path, offline):
     # and the spec asks for fewer plates
     assert validate(CrochetSpec(mode="from_brief", brief="a hat", cost_mode="lean")).plate_limit == 2
     assert validate(CrochetSpec(mode="from_brief", brief="a hat", cost_mode="max")).plate_limit == 5
+
+
+# ---------------------------------------------------------------------- batch
+@pytest.mark.parametrize(
+    ("files", "count", "per", "expected"),
+    [
+        (4, 1, 0, [[0, 1, 2, 3]]),
+        (4, 2, 0, [[0, 1], [2, 3]]),
+        (4, 4, 0, [[0], [1], [2], [3]]),
+        (4, 2, 2, [[0, 1], [2, 3]]),
+        (4, 4, 1, [[0], [1], [2], [3]]),
+        (3, 2, 0, [[0, 1], [2]]),
+    ],
+)
+def test_group_sources_splits_uploads_as_asked(files, count, per, expected):
+    from artisan_forge.products.crochet import group_sources
+
+    paths = [f"f{i}.pdf" for i in range(files)]
+    groups = group_sources(paths, count, per)
+    assert groups == [[paths[i] for i in group] for group in expected]
+
+
+def test_group_sources_always_returns_one_group_per_pattern():
+    from artisan_forge.products.crochet import group_sources
+
+    # more patterns than files: every pattern still gets something to work from
+    groups = group_sources(["a.pdf", "b.pdf", "c.pdf"], 5, 0)
+    assert len(groups) == 5
+    assert all(group for group in groups)
+
+    # asking for more files per pattern than exist wraps rather than truncating
+    groups = group_sources(["a.pdf", "b.pdf", "c.pdf", "d.pdf"], 2, 3)
+    assert len(groups) == 2
+    assert all(len(group) == 3 for group in groups)
+
+    # no uploads at all still yields the right shape
+    assert group_sources([], 3, 0) == [[], [], []]
+
+
+def test_batch_builds_one_distinct_pattern_per_source_file(tmp_path, offline, brand):
+    """Four uploads with pattern_count=4 must give four different patterns."""
+    from artisan_forge.products.crochet import build_crochet_batch
+
+    titles = {
+        "cardigan.txt": "COZY RIBBED CARDIGAN",
+        "beanie.txt": "CHUNKY RIBBED BEANIE",
+        "blanket.txt": "WAFFLE STITCH BLANKET",
+    }
+    files = []
+    for name, title in titles.items():
+        path = tmp_path / name
+        path.write_text(
+            f"{title}\nGauge: 14 sts x 12 rows = 4 x 4 in\n5 mm hook, worsted cotton\n"
+            "Row 1: Ch 40, hdc in each ch. (38 hdc)\n",
+            encoding="utf-8",
+        )
+        files.append(str(path))
+
+    results = build_crochet_batch(
+        CrochetSpec(
+            mode="from_pdfs", source_files=files, brand=brand, cost_mode="lean",
+            listing_image_count=1, pattern_count=3, sources_per_pattern=1,
+        ),
+        out_dir=tmp_path / "batch", settings=offline,
+    )
+
+    assert len(results) == 3
+    # separate run folders, separate PDFs, separate filenames
+    assert len({str(r.run_dir) for r in results}) == 3
+    assert len({r.pdf_path.name for r in results}) == 3
+    built = set()
+    for result in results:
+        manifest = json.loads((result.run_dir / "manifest.json").read_text(encoding="utf-8"))
+        assert manifest["verification"]["ok"], manifest["verification"]["errors"]
+        assert len(manifest["sources"]) == 1  # one source file each
+        built.add(manifest["title"])
+    assert built == set(titles.values())
+
+
+def test_batch_of_one_matches_a_single_build(tmp_path, offline):
+    from artisan_forge.products.crochet import build_crochet_batch
+
+    path = tmp_path / "src.txt"
+    path.write_text(SOURCE_TEXT, encoding="utf-8")
+    results = build_crochet_batch(
+        CrochetSpec(mode="from_pdfs", source_files=[str(path)], cost_mode="lean",
+                    listing_image_count=1, pattern_count=1),
+        out_dir=tmp_path / "single", settings=offline,
+    )
+    assert len(results) == 1
+    assert results[0].pdf_path.exists()
+
+
+def test_pattern_count_is_clamped():
+    spec = validate(CrochetSpec(mode="from_brief", brief="a hat", pattern_count=999))
+    assert spec.pattern_count == 10
+    spec = validate(CrochetSpec(mode="from_brief", brief="a hat", pattern_count=0))
+    assert spec.pattern_count == 1
+
+
+def test_pdf_filename_follows_the_pattern_title():
+    from artisan_forge.products.crochet import _slug_from
+
+    assert _slug_from("Cozy Ribbed Cardigan") == "cozy-ribbed-cardigan-crochet-pattern"
+    assert _slug_from("Crochet Pattern") == "crochet-pattern"
+    assert _slug_from("") == ""
+    assert _slug_from(None) == ""
+
+
+# -------------------------------------------------------------------- mockups
+def test_showcase_pages_leads_with_the_visual_pages():
+    """Listing grids must not open with pages of grey prose."""
+    from artisan_forge.products.crochet import showcase_pages
+
+    pages = [{"kind": k} for k in (
+        "cover", "credits", "contents", "about", "materials", "yarn_guide", "gauge",
+        "sizing", "abbreviations", "construction", "foundation", "chart",
+        "instructions", "counts", "assembly", "seaming", "blocking",
+        "troubleshooting", "care", "gallery", "thanks",
+    )]
+    chosen = showcase_pages(pages, 12)
+    kinds = [pages[i]["kind"] for i in chosen]
+
+    assert len(chosen) == 12
+    assert len(set(chosen)) == 12                       # no repeats
+    assert kinds[:4] == ["chart", "construction", "sizing", "gauge"]
+    assert "gallery" in kinds
+    # front matter and back matter never appear in the grid
+    assert not ({"cover", "credits", "contents", "thanks"} & set(kinds))
+
+
+def test_showcase_pages_handles_short_documents():
+    from artisan_forge.products.crochet import showcase_pages
+
+    pages = [{"kind": k} for k in ("cover", "credits", "instructions", "thanks")]
+    chosen = showcase_pages(pages, 12)
+    assert chosen == [2]  # only the one usable page, no padding with front matter
+
+    assert showcase_pages([{"kind": "cover"}], 12) == []
+
+
+def test_mockup_context_advertises_the_whole_product():
+    pattern = expand.ensure_stitch_counts(expand.template_pattern(garment="cardigan"))
+    pages = [{"kind": k} for k in (
+        "cover", "credits", "contents", "about", "gauge", "sizing", "construction",
+        "chart", "instructions", "counts", "seaming", "care", "thanks",
+    )]
+    from artisan_forge.products.crochet import mockup_context
+
+    context = mockup_context(CrochetSpec(garment="cardigan"), pattern, pages)
+    assert context.grid_cols * context.grid_rows == 12
+    assert str(len(pages)) in context.grid_headline
+    assert len(context.bullets) >= 5
+    assert any("stitch count" in b.lower() for b in context.bullets)
+    assert any("diagram" in b.lower() for b in context.bullets)
+    assert context.scenes[1] == "bundle_grid"   # the "what you get" grid comes early
+    assert context.page_indexes
+
+
+def test_letter_spaced_text_shares_one_baseline():
+    """Guards the mockup wobble: tracked glyphs must not each use their own bbox."""
+    from PIL import Image, ImageDraw
+
+    from artisan_forge.mockups.draw_utils import draw_text, get_font
+
+    font = get_font(64, "bold")
+    text = "Included"
+
+    def ink_top(tracking: float) -> list[int]:
+        image = Image.new("L", (900, 200), 0)
+        draw = ImageDraw.Draw(image)
+        draw_text(draw, (20, 60), text, font, 255, tracking=tracking)
+        pixels = image.load()
+        # topmost inked row for each column that has ink
+        tops: list[int] = []
+        for x in range(image.width):
+            for y in range(image.height):
+                if pixels[x, y] > 40:
+                    tops.append(y)
+                    break
+        return tops
+
+    plain = ink_top(0.0)
+    tracked = ink_top(6.0)
+    assert plain and tracked
+    # The tallest glyphs must start at the same height whether tracked or not.
+    assert abs(min(plain) - min(tracked)) <= 2, "tracked text shifted vertically"
+    # And the run of glyph tops must not be wildly more scattered than untracked.
+    assert max(tracked) - min(tracked) <= (max(plain) - min(plain)) + 3
+
+
+# ------------------------------------------------------------ market research
+MARKET_SAMPLE = [
+    {
+        "query": "crochet cardigan pattern",
+        "title": "Crochet Cardigan Pattern PDF | Sizes XS-5XL | Worsted Weight | Instant Download",
+        "price": 8.5, "currency": "USD", "originalPrice": 8.5, "onSale": False,
+        "tags": ["crochet cardigan", "cardigan pattern", "size inclusive",
+                 "plus size crochet", "worsted weight", "crochet sweater",
+                 "pdf pattern", "written pattern"],
+        "tagVolumes": {"crochet cardigan": 9200000, "cardigan pattern": 3100000,
+                       "size inclusive": 740000, "plus size crochet": 1100000,
+                       "worsted weight": 2400000, "crochet sweater": 11000000,
+                       "pdf pattern": 7900000, "written pattern": 480000},
+        "ehuntEstimatedSales": 1420, "favoritesCount": 1840, "reviewCount": 212,
+        "imageCount": 10, "demandScore": 82, "opportunityScore": 61,
+        "ehuntBestSeller": True, "isDigital": True,
+    },
+    {
+        "query": "crochet cardigan pattern",
+        "title": "Oversized Crochet Cardigan Pattern - Beginner Friendly PDF, 6 Sizes",
+        "price": 6.0, "currency": "USD", "originalPrice": 12.0, "onSale": True,
+        "ehuntDiscountPercent": 50,
+        "tags": ["oversized cardigan", "beginner crochet", "crochet pattern",
+                 "chunky cardigan", "24in1pokemon crochet"],
+        "tagVolumes": {"oversized cardigan": 2100000, "beginner crochet": 18300000,
+                       "crochet pattern": 46200000, "chunky cardigan": 890000,
+                       "24in1pokemon crochet": 55300000},
+        "ehuntEstimatedSales": 640, "favoritesCount": 720, "reviewCount": 88,
+        "imageCount": 8, "demandScore": 71, "opportunityScore": 55,
+    },
+    {
+        "query": "crochet cardigan pattern",
+        "title": "200+ Amigurumi Keychain Bundle PDF Instant Download",
+        "price": 1.68, "currency": "USD", "originalPrice": 6.7, "onSale": True,
+        "ehuntDiscountPercent": 75,
+        "tags": ["amigurumi keychain", "crochet keychain", "crochet bundle"],
+        "tagVolumes": {"amigurumi keychain": 4300000, "crochet keychain": 5600000,
+                       "crochet bundle": 4400000},
+        "ehuntEstimatedSales": 0, "favoritesCount": 110, "imageCount": 8,
+        "demandScore": 55, "opportunityScore": 38,
+    },
+]
+
+
+@pytest.mark.parametrize("fmt", ["json", "results", "jsonl", "csv"])
+def test_market_data_reads_every_text_format(fmt):
+    from artisan_forge.crochet import market
+
+    if fmt == "json":
+        payload = json.dumps(MARKET_SAMPLE)
+    elif fmt == "results":
+        payload = json.dumps({"results": MARKET_SAMPLE})
+    elif fmt == "jsonl":
+        payload = "\n".join(json.dumps(row) for row in MARKET_SAMPLE)
+    else:
+        payload = (
+            "title,price,currency,tags,favoritesCount,ehuntEstimatedSales,demandScore\n"
+            '"Crochet Cardigan Pattern PDF",8.50,USD,"crochet cardigan,pdf pattern",1840,1420,82\n'
+        )
+
+    listings, warnings = market.load_market_data(payload)
+    assert listings and not warnings
+    assert listings[0].title.startswith("Crochet Cardigan") or listings[0].title
+    assert listings[0].price
+
+
+def test_market_data_reads_uploaded_files(tmp_path):
+    from artisan_forge.crochet import market
+
+    (tmp_path / "a.json").write_text(json.dumps(MARKET_SAMPLE), encoding="utf-8")
+    (tmp_path / "b.jsonl").write_text(
+        "\n".join(json.dumps(r) for r in MARKET_SAMPLE), encoding="utf-8"
+    )
+    listings, warnings = market.load_market_data(
+        "", [tmp_path / "a.json", tmp_path / "b.jsonl"]
+    )
+    assert len(listings) == len(MARKET_SAMPLE) * 2
+    assert not warnings
+
+
+def test_market_data_reads_excel(tmp_path):
+    openpyxl = pytest.importorskip("openpyxl")
+    from artisan_forge.crochet import market
+
+    workbook = openpyxl.Workbook()
+    sheet = workbook.active
+    sheet.append(["title", "price", "tags", "favoritesCount", "ehuntEstimatedSales"])
+    sheet.append(["Crochet Tote Pattern PDF", 6.0, "tote pattern,crochet bag", 210, 300])
+    path = tmp_path / "scrape.xlsx"
+    workbook.save(path)
+
+    listings, warnings = market.load_market_data("", [path])
+    assert not warnings
+    assert len(listings) == 1
+    assert listings[0].title == "Crochet Tote Pattern PDF"
+    assert listings[0].price == 6.0
+    assert "tote pattern" in listings[0].tags
+
+
+def test_market_data_reports_unreadable_input():
+    from artisan_forge.crochet import market
+
+    listings, warnings = market.load_market_data("not json at all {{{")
+    assert not listings
+    assert warnings and "could not be parsed" in warnings[0]
+
+    # a missing file is reported, not raised
+    listings, warnings = market.load_market_data("", ["/nope/missing.json"])
+    assert not listings and warnings
+
+
+def test_market_analysis_extracts_pricing_strategy():
+    from artisan_forge.crochet import market
+
+    listings, _ = market.load_market_data(json.dumps(MARKET_SAMPLE))
+    report = market.analyse(listings, relevance="cardigan worsted")
+
+    assert report.listings == 3
+    assert report.price_min == 1.68 and report.price_max == 8.5
+    assert report.currency == "USD"
+    assert report.sale_share == pytest.approx(0.67, abs=0.01)
+    assert report.discount_median == 62.5
+    # priced off the winners, not the whole field
+    assert report.suggested_price and 5.0 <= report.suggested_price <= 8.5
+    # the market discounts heavily, so a list price is proposed to match
+    assert report.suggested_list_price and report.suggested_list_price > report.suggested_price
+    assert report.image_count_median == 8
+    assert report.demand_mean and report.opportunity_mean
+    assert report.top_performers[0].estimated_sales == 1420
+
+
+def test_market_tags_are_ranked_by_volume_and_performance():
+    from artisan_forge.crochet import market
+
+    listings, _ = market.load_market_data(json.dumps(MARKET_SAMPLE))
+    report = market.analyse(listings, relevance="cardigan worsted cotton")
+    tags = report.best_tags()
+
+    assert 0 < len(tags) <= 13
+    assert all(len(tag) <= 20 for tag in tags)
+    assert all(tag == tag.lower() for tag in tags)
+    # the highest-volume on-niche tag leads
+    assert "crochet cardigan" in tags[:4]
+    # volume is recorded alongside the tag
+    cardigan = next(t for t in report.tags if t.tag == "crochet cardigan")
+    assert cardigan.volume == 9200000
+
+
+@pytest.mark.parametrize(
+    ("tag", "spam"),
+    [
+        ("24in1pokemon crochet", True),
+        ("12in1bundle pack", True),
+        ("3xl cardigan", False),
+        ("8mm hook", False),
+        ("4ply yarn", False),
+        ("crochet pattern", False),
+        ("size 3xl", False),
+    ],
+)
+def test_keyword_stuffed_tags_are_detected(tag, spam):
+    from artisan_forge.crochet import market
+
+    assert market.looks_like_spam(tag) is spam
+
+
+def test_keyword_stuffed_tags_never_reach_the_listing():
+    from artisan_forge.crochet import market
+
+    listings, _ = market.load_market_data(json.dumps(MARKET_SAMPLE))
+    report = market.analyse(listings, relevance="cardigan")
+    assert not any("24in1" in tag for tag in report.best_tags())
+    assert not any("24in1" in insight.tag for insight in report.tags)
+
+
+def test_tag_relevance_keeps_the_listing_on_niche():
+    from artisan_forge.crochet import market
+
+    cardigan = market._expand_families(market._relevance_tokens("cardigan worsted"))
+    # names the product, or a synonym of it
+    assert market.tag_relevance("crochet cardigan", cardigan) == 1.0
+    assert market.tag_relevance("crochet sweater", cardigan) == 1.0
+    # generic craft language is always fine
+    assert market.tag_relevance("pdf pattern", cardigan) == 1.0
+    assert market.tag_relevance("instant download", cardigan) == 1.0
+    # same category, still plausible
+    assert market.tag_relevance("crochet top", cardigan) == 0.7
+    # a different product category entirely
+    assert market.tag_relevance("crochet keychain", cardigan) < 0.5
+    assert market.tag_relevance("amigurumi pokemon", cardigan) < 0.5
+    # with no product context nothing is filtered
+    assert market.tag_relevance("crochet keychain", set()) == 1.0
+
+
+def test_off_niche_tags_are_excluded_from_the_tag_set():
+    from artisan_forge.crochet import market
+
+    listings, _ = market.load_market_data(json.dumps(MARKET_SAMPLE))
+    report = market.analyse(listings, relevance="cardigan worsted cotton")
+    tags = report.best_tags()
+
+    assert not any("keychain" in tag for tag in tags), tags
+    assert any("cardigan" in tag or "sweater" in tag for tag in tags)
+    # they are still recorded, just not selected
+    assert any("keychain" in insight.tag for insight in report.tags)
+    assert "crochet keychain" in report.best_tags(limit=30, on_niche_only=False)
+
+
+def test_market_brief_is_bounded_and_informative():
+    from artisan_forge.crochet import market
+
+    listings, _ = market.load_market_data(json.dumps(MARKET_SAMPLE))
+    report = market.analyse(listings, relevance="cardigan")
+    brief = market.market_brief(report, limit=3000)
+
+    assert len(brief) <= 3000
+    assert "MARKET RESEARCH" in brief
+    assert "HIGHEST VALUE TAGS" in brief
+    assert "BEST PERFORMING COMPETITORS" in brief
+    assert "crochet cardigan" in brief
+    # an empty report produces nothing rather than a stub
+    assert market.market_brief(market.analyse([])) == ""
+
+
+def test_market_listing_normaliser_enforces_etsy_limits():
+    from artisan_forge.crochet import market
+
+    listings, _ = market.load_market_data(json.dumps(MARKET_SAMPLE))
+    report = market.analyse(listings, relevance="cardigan")
+    fallback = {
+        "title": "fallback title", "tags": ["crochet cardigan"],
+        "description": "d" * 300, "suggested_price_usd": 7.5, "materials": ["PDF"],
+    }
+    listing = market.normalise_listing(
+        {
+            "title": "X" * 300,
+            "tags": ["Crochet Cardigan!!", "A" * 40, "dupe", "dupe", ""],
+            "description": "too short",
+            "suggested_price_usd": "about 9.99 dollars",
+            "list_price_usd": 24.0,
+            "reasoning": "long tail keywords",
+        },
+        report, fallback,
+    )
+
+    assert len(listing["title"]) <= 140
+    assert len(listing["tags"]) <= 13
+    assert all(len(tag) <= 20 for tag in listing["tags"])
+    assert len(set(listing["tags"])) == len(listing["tags"])   # no duplicates
+    assert listing["description"] == fallback["description"]   # model's was too short
+    assert listing["suggested_price_usd"] == 9.99
+    assert listing["list_price_usd"] == 24.0
+    assert listing["keyword_reasoning"] == "long tail keywords"
+
+    # garbage in, fallback out
+    assert market.normalise_listing(None, report, fallback) == fallback
+
+
+def test_market_research_drives_the_built_listing(tmp_path, offline):
+    """The whole point: research must change the tags and the price."""
+    source = tmp_path / "cardigan.txt"
+    source.write_text(SOURCE_TEXT, encoding="utf-8")
+    research = tmp_path / "market.json"
+    research.write_text(json.dumps(MARKET_SAMPLE), encoding="utf-8")
+
+    result = build_crochet(
+        CrochetSpec(
+            mode="from_pdfs", source_files=[str(source)],
+            market_files=[str(research)], garment="cardigan",
+            listing_image_count=1, cost_mode="lean",
+        ),
+        out_dir=tmp_path / "run", settings=offline,
+    )
+    manifest = json.loads((result.run_dir / "manifest.json").read_text(encoding="utf-8"))
+    listing = manifest["listing"]
+    report = manifest["market"]
+
+    assert report and report["listings"] == 3
+    # price comes from the competitor analysis, not the cost-mode default
+    assert listing["suggested_price_usd"] == report["suggested_price"]
+    assert listing["list_price_usd"] == report["suggested_list_price"]
+    # tags are research-led, on-niche and within Etsy's limits
+    assert len(listing["tags"]) <= 13
+    assert all(len(tag) <= 20 for tag in listing["tags"])
+    assert any("cardigan" in tag or "sweater" in tag for tag in listing["tags"])
+    assert not any("keychain" in tag or "pokemon" in tag for tag in listing["tags"])
+    assert manifest["verification"]["ok"]
+
+
+def test_build_without_market_data_is_unchanged(tmp_path, offline):
+    source = tmp_path / "cardigan.txt"
+    source.write_text(SOURCE_TEXT, encoding="utf-8")
+
+    result = build_crochet(
+        CrochetSpec(
+            mode="from_pdfs", source_files=[str(source)], garment="cardigan",
+            listing_image_count=1, cost_mode="lean",
+        ),
+        out_dir=tmp_path / "run", settings=offline,
+    )
+    manifest = json.loads((result.run_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["market"] is None
+    assert manifest["listing"]["tags"]           # still produces a full listing
+    assert manifest["listing"]["suggested_price_usd"] > 0
+    assert "list_price_usd" not in manifest["listing"]

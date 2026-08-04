@@ -149,7 +149,7 @@ complete, graded, branded pattern document.
 
 | Mode | Input | What it does |
 |---|---|---|
-| Rebuild from uploaded patterns | up to 10 PDFs | parses every row, stitch count, gauge and abbreviation out of patterns you own, then rewrites one complete graded pattern from what they contain |
+| Rebuild from uploaded patterns | up to 10 PDFs | parses every row, stitch count, gauge and abbreviation out of patterns you own, then rewrites complete graded patterns from what they contain. Choose how many patterns to build and how many uploads feed each one |
 | From my Etsy product data | CSV / JSON / pasted text + a product number | reads the whole catalogue, builds the pattern for the product you numbered, and writes that pattern's Etsy listing using your existing tags as signal |
 | From a written brief | one sentence | a full pattern from a description |
 | From photos | up to 6 photos | ChatGPT reads the stitch pattern, construction and gauge back off the images |
@@ -190,6 +190,48 @@ instructions.
 Cost is explicit. `lean` uses the cheap model tier (`AF_TEXT_MODEL_CHEAP`, `AF_IMAGE_MODEL_CHEAP`)
 and renders 2 images; `standard` and `max` render 5. The tech pack mode makes no API calls at all.
 With no keys the studio still produces the full document from templates and procedural art.
+
+### Batch: many patterns from one upload set
+
+Upload four patterns and you can ask for four products, not one. "Patterns to create" sets how many
+separate builds to run; "source files per pattern" decides which uploads feed each one (0 splits
+them evenly). Every pattern gets its own run folder, PDF filename, mockups, listing and ZIP, and a
+failure in one does not abandon the rest.
+
+### Market research: listings written from real demand
+
+Upload an Etsy competitor scrape - **JSON**, **JSONL**, **CSV/TSV** or **Excel** - and the listing
+stops being guesswork. `artisan_forge/crochet/market.py` reads it and works out:
+
+| From the data | Used for |
+|---|---|
+| `tagVolumes` | ranking tags by real monthly search volume |
+| `tags` | candidate tags, and how contested each one is |
+| `price`, `originalPrice`, `ehuntDiscountPercent` | what to charge, and whether to list high and discount |
+| `ehuntEstimatedSales`, `favoritesCount`, `reviewCount` | which competitors are actually winning |
+| `title` | the title conventions buyers in this niche already click |
+| `demandScore`, `opportunityScore` | niche health, reported in the results panel |
+| `imageCount` | how many listing images competitors use |
+
+Field names are matched loosely, so `estimatedSales`, `numFavorers` or `keywords` land in the right
+place too. Three corrections are applied because raw scrape numbers mislead:
+
+* **Volume is scaled logarithmically.** A scrape will list a tag claiming 55M searches beside a real
+  one claiming 260K; linear scaling lets the outlier swamp everything.
+* **Keyword-stuffed junk is dropped.** Tags like `24in1pokemon crochet` never reach the listing.
+* **Off-niche tags are excluded.** A broad "crochet" search returns cardigans next to amigurumi
+  keychains. Tags are re-scored against the item you are actually making, so a cardigan does not get
+  tagged `crochet keychain` - a generic `instant download` is strictly better than wrong-niche
+  traffic. Same-category neighbours (`crochet top` for a cardigan) are kept.
+
+Pricing follows the *winners*, not the field average, then mirrors the market's sale pattern: if 67%
+of competitors run permanent discounts, the report proposes a list price and a sale price so the
+listing shows a strikethrough like the rest.
+
+With an OpenAI key, one focused call then writes the title, tags and description from that brief -
+SEO is worth its own pass rather than being bolted onto the end of the pattern prompt. Without a
+key, the research still sets the tags and the price locally. Everything is capped to Etsy's limits
+(140-character title, 13 tags, 20 characters each) and the full report lands in `manifest.json`.
 
 ## AI art
 

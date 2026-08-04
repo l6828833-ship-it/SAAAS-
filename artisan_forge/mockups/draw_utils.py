@@ -108,8 +108,26 @@ def draw_text(
     if not tracking:
         draw.text((x, y), text, font=font, fill=fill, anchor=f"l{anchor_v}")
         return width
+
+    # Letter-spaced text is drawn one glyph at a time, and every glyph has to
+    # share a single baseline. Pillow's "t"/"m"/"b" anchors are relative to the
+    # bounding box of whatever is being drawn, so anchoring each character
+    # separately makes x-height letters (e, u, o) sit lower than tall ones
+    # (I, d, l) and the line visibly wobbles. Resolve the requested anchor
+    # against the whole string once, then draw every glyph on that baseline.
+    _, top, _, bottom = draw.textbbox((0, 0), text, font=font, anchor="ls")
+    ascent, descent = font.getmetrics()
+    baseline = {
+        "s": y,
+        "t": y - top,
+        "b": y - bottom,
+        "m": y - (top + bottom) / 2,
+        "a": y + ascent,
+        "d": y - descent,
+    }.get(anchor_v, y - top)
+
     for char in text:
-        draw.text((x, y), char, font=font, fill=fill, anchor=f"l{anchor_v}")
+        draw.text((x, baseline), char, font=font, fill=fill, anchor="ls")
         x += font.getlength(char) + tracking
     return width
 

@@ -11,17 +11,19 @@ import streamlit as st
 
 from artisan_forge.ai.text_client import model_chain
 from artisan_forge.config import get_settings
-from artisan_forge.crochet import diagrams, etsy_data
+from artisan_forge.crochet import diagrams, etsy_data, market
 from artisan_forge.crochet.brand import BrandKit
 from artisan_forge.models import PAPER_SIZES
 from artisan_forge.products.crochet import (
     COST_MODES,
+    MAX_PATTERNS_PER_RUN,
     MAX_PHOTOS,
     MAX_SOURCE_FILES,
     MODE_ORDER,
     MODES,
     CrochetSpec,
-    build_crochet,
+    build_crochet_batch,
+    group_sources,
 )
 from artisan_forge.saas import auth
 from artisan_forge.themes import theme_labels
@@ -132,8 +134,8 @@ def _mode_inputs(mode: str) -> dict:
     if mode == "from_pdfs":
         theme.note(
             f"Upload up to {MAX_SOURCE_FILES} crochet pattern PDFs you already own. Every row, "
-            "stitch count, gauge and abbreviation is parsed out of them, then ChatGPT writes one "
-            "complete, graded pattern from what they contain.",
+            "stitch count, gauge and abbreviation is parsed out of them, then ChatGPT writes "
+            "complete, graded patterns from what they contain.",
             "info",
         )
         uploads = st.file_uploader(
@@ -146,6 +148,7 @@ def _mode_inputs(mode: str) -> dict:
             theme.note(f"Only the first {MAX_SOURCE_FILES} files will be used.", "warn")
         if paths:
             _preview_sources(paths)
+        fragment.update(_batch_controls(paths, "pdfs"))
         fragment["brief"] = st.text_input(
             "Anything to add? (optional)",
             placeholder="Make it oversized with a deeper armhole",
@@ -282,6 +285,127 @@ def _mode_inputs(mode: str) -> dict:
     return fragment
 
 
+def _batch_controls(paths: list[str], key: str) -> dict:
+    """How many patterns to build, and how many uploads feed each one."""
+    if not paths:
+        return {"pattern_count": 1, "sources_per_pattern": 0}
+
+    st.markdown("**How many patterns do you want from these files?**")
+    col_a, col_b = st.columns(2)
+    count = col_a.number_input(
+        "Patterns to create",
+        min_value=1, max_value=min(MAX_PATTERNS_PER_RUN, max(len(paths), 1) * 2),
+        value=1, step=1, key=f"crochet_count_{key}",
+        help="Each pattern gets its own PDF, mockups, listing and ZIP.",
+    )
+    per = col_b.number_input(
+        "Source files per pattern (0 = split evenly)",
+        min_value=0, max_value=len(paths), value=0, step=1,
+        key=f"crochet_per_{key}",
+        help="0 shares all your uploads out evenly. Set 1 to build one pattern per file.",
+    )
+
+    groups = group_sources(paths, int(count), int(per))
+    rows = []
+    for index, group in enumerate(groups, start=1):
+        rows.append({
+            "Pattern": index,
+            "Built from": ", ".join(Path(p).name[:28] for p in group) or "-",
+            "Files": len(group),
+        })
+    st.dataframe(rows, use_container_width=True, hide_index=True,
+                 height=min(240, 40 + 35 * len(rows)))
+    if int(count) > 1:
+        st.caption(
+            f"This run will build **{int(count)} separate patterns**, each with its own PDF, "
+            "listing images and Etsy copy."
+        )
+    return {"pattern_count": int(count), "sources_per_pattern": int(per)}
+
+
+def _market_inputs(key: str) -> dict:
+    """Upload competitor research so the listing is written from real demand."""
+    with st.expander(
+        "\U0001f4c8 Market research \u2014 write the title, tags, description and price "
+        "from real Etsy data",
+        expanded=False,
+    ):
+        st.caption(
+            "Upload or paste an Etsy competitor scrape and the listing is built from it: "
+            "tags ranked by real search volume, pricing from what the best sellers charge, "
+            "and a title that follows the conventions buyers already click. "
+            "Accepts **JSON**, **JSONL**, **CSV/TSV** and **Excel (.xlsx)**."
+        )
+        files = st.file_uploader(
+            "Research files",
+            type=["json", "jsonl", "csv", "tsv", "txt", "xlsx", "xlsm"],
+            accept_multiple_files=True, key=f"crochet_market_files_{key}",
+        )
+        text = st.text_area(
+            "or paste the data here",
+            height=140, key=f"crochet_market_text_{key}",
+            placeholder='[{"title": "...", "price": 8.5, "tags": ["crochet cardigan"], '
+                        '"tagVolumes": {"crochet cardigan": 9200000}, '
+                        '"ehuntEstimatedSales": 1420, "favoritesCount": 1840}]',
+        )
+        paths = _save_uploads(files, "market")
+
+        with st.expander("What fields does it read?"):
+            st.markdown(
+                "Everything is optional \u2014 the more you supply, the better the listing.\n\n"
+                "| Field | Used for |\n|---|---|\n"
+                "| `title` | title conventions in your niche |\n"
+                "| `tags` | tag candidates |\n"
+                "| `tagVolumes` | ranking tags by monthly search volume |\n"
+                "| `price`, `originalPrice`, `ehuntDiscountPercent` | pricing strategy |\n"
+                "| `ehuntEstimatedSales`, `favoritesCount`, `reviewCount` | which competitors are winning |\n"
+                "| `demandScore`, `opportunityScore` | niche health |\n"
+                "| `imageCount` | how many listing images to make |\n\n"
+                "Alternative field names (`estimatedSales`, `numFavorers`, `shopName`, "
+                "`keywords`\u2026) are matched automatically."
+            )
+
+        if text.strip() or paths:
+            listings, warnings = market.load_market_data(text, paths)
+            for warning in warnings:
+                theme.note(warning, "warn")
+            if listings:
+                report = market.analyse(listings, relevance="")
+                cols = st.columns(4)
+                cols[0].metric("Listings read", report.listings)
+                cols[1].metric(
+                    "Median price",
+                    f"{report.price_median:g}" if report.price_median else "-",
+                    help=f"Currency: {report.currency or 'unknown'}",
+                )
+                cols[2].metric(
+                    "Suggested price",
+                    f"{report.suggested_price:g}" if report.suggested_price else "-",
+                    help="What the best-performing competitors charge",
+                )
+                cols[3].metric("Tags found", len([t for t in report.tags if t.etsy_safe]))
+
+                top = [t for t in report.tags if t.etsy_safe][:13]
+                if top:
+                    st.dataframe(
+                        [
+                            {
+                                "Tag": t.tag,
+                                "Search volume": f"{t.volume:,}" if t.volume else "-",
+                                "Competitors": t.used_by,
+                            }
+                            for t in top
+                        ],
+                        use_container_width=True, hide_index=True,
+                        height=min(260, 40 + 34 * len(top)),
+                    )
+                    st.caption(
+                        "Final ranking is re-scored against your actual item type when you "
+                        "build, so off-niche tags drop away."
+                    )
+        return {"market_text": text, "market_files": paths}
+
+
 def _preview_sources(paths: list[str]) -> None:
     """Show what the parser actually found in the uploads."""
     from artisan_forge.crochet.extract import extract_many, merge_sources
@@ -378,6 +502,7 @@ def render(user: dict) -> None:
         disabled=mode == "tech_pack",
     )
 
+    market_fragment = _market_inputs(mode)
     brand = _brand_inputs()
 
     with st.expander("Advanced options"):
@@ -443,16 +568,23 @@ def render(user: dict) -> None:
         use_canva=bool(use_canva),
         canva_pull_back=bool(canva_pull_back),
         listing_image_count=int(images),
+        **market_fragment,
         **fragment,
     )
 
     ready, reason = _readiness(spec)
-    calls = 0 if spec.offline_only or not settings.ai_available else (1 + spec.plate_limit)
+    per_pattern = 0 if spec.offline_only or not settings.ai_available else (1 + spec.plate_limit)
+    calls = per_pattern * spec.pattern_count
+    batch_note = (
+        f"<b style='color:#ECECF1'>{spec.pattern_count} patterns</b> \u00b7 "
+        if spec.pattern_count > 1 else ""
+    )
     st.markdown(
         f"<div style='color:#9A9AAE;font-size:.88rem;margin:.4rem 0 .8rem'>"
+        f"{batch_note}"
         f"<b style='color:#ECECF1'>{MODES[mode]}</b> \u00b7 {spec.size_label} {spec.orientation} "
-        f"\u00b7 {len(spec.sizes) or 1} size(s) \u00b7 {int(images)} listing images \u00b7 "
-        f"about <b style='color:#ECECF1'>{calls}</b> API call(s)</div>",
+        f"\u00b7 {len(spec.sizes) or 1} size(s) \u00b7 {int(images)} listing images each \u00b7 "
+        f"about <b style='color:#ECECF1'>{calls}</b> API call(s) total</div>",
         unsafe_allow_html=True,
     )
 
@@ -461,23 +593,40 @@ def render(user: dict) -> None:
         theme.note(quota_reason, "warn")
         return
 
+    plural = "patterns" if spec.pattern_count > 1 else "pattern"
     if st.button(
-        "\U0001f9f6 Generate pattern", type="primary", use_container_width=True,
-        disabled=not ready,
+        f"\U0001f9f6 Generate {spec.pattern_count} {plural}" if spec.pattern_count > 1
+        else "\U0001f9f6 Generate pattern",
+        type="primary", use_container_width=True, disabled=not ready,
     ):
-        result = run_with_progress(
-            lambda report: build_crochet(spec, progress=report, settings=settings),
-            "Building your crochet pattern\u2026",
+        results = run_with_progress(
+            lambda report: build_crochet_batch(spec, progress=report, settings=settings),
+            f"Building your crochet {plural}\u2026",
         )
-        if result:
-            remember(user, result)
-            manifest = load_manifest(result.run_dir) or {}
-            st.success(
-                f"Built a {manifest.get('pages', 0)}-page pattern with "
-                f"{manifest.get('steps', 0)} steps from "
-                f"`{manifest.get('content_source', 'template')}` content in "
-                f"{manifest.get('duration_seconds', 0):.1f}s."
-            )
+        if results:
+            for result in results:
+                remember(user, result)
+            if len(results) == 1:
+                manifest = load_manifest(results[0].run_dir) or {}
+                st.success(
+                    f"Built a {manifest.get('pages', 0)}-page pattern with "
+                    f"{manifest.get('steps', 0)} steps from "
+                    f"`{manifest.get('content_source', 'template')}` content in "
+                    f"{manifest.get('duration_seconds', 0):.1f}s."
+                )
+            else:
+                st.success(f"Built {len(results)} separate patterns.")
+                for index, result in enumerate(results, start=1):
+                    manifest = load_manifest(result.run_dir) or {}
+                    st.markdown(
+                        f"**{index}. {manifest.get('title', 'Pattern')}** \u2014 "
+                        f"{manifest.get('pages', 0)} pages, "
+                        f"{manifest.get('steps', 0)} steps, "
+                        f"{len(manifest.get('files', {}).get('listing_images') or [])} images"
+                    )
+                st.caption(
+                    "All of them are in your Library. The most recent one is shown below."
+                )
     if not ready:
         st.caption(reason)
 
@@ -523,6 +672,49 @@ def _extras(manifest: dict) -> None:
                 for column, path in zip(st.columns(2), diagram_paths[row_start : row_start + 2]):
                     column.image(str(path), caption=path.stem.replace("-", " "),
                                  use_container_width=True)
+
+    research = manifest.get("market")
+    if research and research.get("listings"):
+        listing = manifest.get("listing") or {}
+        with st.expander(
+            f"\U0001f4c8 Market research \u2014 {research['listings']} competitors analysed"
+        ):
+            cols = st.columns(4)
+            cols[0].metric("Competitors", research["listings"])
+            cols[1].metric(
+                "Their median price",
+                f"{research.get('price_median') or '-'}",
+                help=f"Currency: {research.get('currency') or 'unknown'}",
+            )
+            cols[2].metric("Your price", f"{listing.get('suggested_price_usd', '-')}")
+            if listing.get("list_price_usd"):
+                cols[3].metric(
+                    "List at", f"{listing['list_price_usd']}",
+                    help="Then discount, matching the market's sale pattern",
+                )
+            elif research.get("opportunity_mean") is not None:
+                cols[3].metric("Opportunity", research["opportunity_mean"])
+
+            if listing.get("keyword_reasoning"):
+                st.caption(f"Keyword strategy: {listing['keyword_reasoning']}")
+            tags = research.get("tags") or []
+            usable = [t for t in tags if t.get("tag") and len(t["tag"]) <= 20][:13]
+            if usable:
+                st.dataframe(
+                    [
+                        {
+                            "Tag": t["tag"],
+                            "Search volume": f"{t.get('volume', 0):,}" if t.get("volume") else "-",
+                            "Competitors using it": t.get("used_by", 0),
+                            "On your listing": "yes" if t["tag"] in (listing.get("tags") or []) else "",
+                        }
+                        for t in usable
+                    ],
+                    use_container_width=True, hide_index=True,
+                )
+            if research.get("title_structures"):
+                st.caption("Title conventions: " + "; ".join(research["title_structures"][:6]))
+            st.caption(f"Listing copy source: `{manifest.get('listing_source', 'template')}`")
 
     canva = manifest.get("canva") or {}
     urls = {slot: url for slot, url in (canva.get("edit_urls") or {}).items() if url}
