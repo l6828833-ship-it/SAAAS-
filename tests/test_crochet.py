@@ -431,6 +431,170 @@ def test_normalise_briefs_drops_junk_and_keeps_a_cover():
     assert "cover" in keys  # injected so the cover page always has art
 
 
+def test_a_one_image_budget_buys_the_cover(tmp_path):
+    """The cover is the PDF's first page and the Etsy hero: it must win the budget."""
+    pattern = expand.template_pattern(garment="cardigan")
+    result = imagery.build_imagery(
+        pattern, "cardigan", tmp_path, generate_art=False, use_canva=False, plate_limit=1,
+    )
+    assert list(result["plates"]) == ["cover"]
+
+    # and it actually reaches the cover page
+    document = CrochetPDF(pattern, plates=result["plates"])
+    assert document.plates.get("cover")
+
+
+@pytest.mark.parametrize(
+    ("limit", "expected"),
+    [
+        (1, ["cover"]),
+        (2, ["cover", "finished"]),
+        (3, ["cover", "finished", "materials"]),
+    ],
+)
+def test_image_budget_is_spent_in_priority_order(tmp_path, limit, expected):
+    pattern = expand.template_pattern(garment="cardigan")
+    result = imagery.build_imagery(
+        pattern, "cardigan", tmp_path / str(limit),
+        generate_art=False, use_canva=False, plate_limit=limit,
+    )
+    assert list(result["plates"]) == expected
+
+
+def test_priority_order_survives_briefs_arriving_shuffled():
+    """ChatGPT returns briefs in any order; the cover still has to come first."""
+    fallback = expand.default_image_briefs("cardigan", "worsted", ["cotton"])
+    shuffled = {
+        "image_briefs": [
+            {"key": "texture", "prompt": "a macro shot of crochet fabric stitches close up"},
+            {"key": "materials", "prompt": "a flat lay of yarn balls and a hook on pale linen"},
+            {"key": "cover", "prompt": "a folded cardigan on pale linen with room for a title"},
+        ]
+    }
+    ordered = imagery._by_priority(imagery.normalise_briefs(shuffled, fallback))
+    assert ordered[0]["key"] == "cover"
+    assert [b["key"] for b in ordered] == ["cover", "materials", "texture"]
+
+
+def test_default_briefs_lead_with_the_cover():
+    briefs = expand.default_image_briefs("cardigan", "worsted", ["cotton"])
+    assert briefs[0]["key"] == "cover"
+    # on a one-image budget the cover must show the item, not just set a mood
+    assert "cardigan" in briefs[0]["prompt"]
+    assert "space" in briefs[0]["prompt"].lower()   # room for the title block
+
+
+def test_a_one_image_budget_buys_the_cover(tmp_path):
+    """The cover is the PDF's first page and the Etsy hero: it must win the budget."""
+    pattern = expand.template_pattern(garment="cardigan")
+    result = imagery.build_imagery(
+        pattern, "cardigan", tmp_path, generate_art=False, use_canva=False, plate_limit=1,
+    )
+    assert list(result["plates"]) == ["cover"]
+    # and it actually reaches the cover page
+    assert CrochetPDF(pattern, plates=result["plates"]).plates.get("cover")
+
+
+@pytest.mark.parametrize(
+    ("limit", "expected"),
+    [
+        (1, ["cover"]),
+        (2, ["cover", "finished"]),
+        (3, ["cover", "finished", "materials"]),
+    ],
+)
+def test_image_budget_is_spent_in_priority_order(tmp_path, limit, expected):
+    pattern = expand.template_pattern(garment="cardigan")
+    result = imagery.build_imagery(
+        pattern, "cardigan", tmp_path / str(limit),
+        generate_art=False, use_canva=False, plate_limit=limit,
+    )
+    assert list(result["plates"]) == expected
+
+
+def test_priority_order_survives_briefs_arriving_shuffled():
+    """ChatGPT returns briefs in any order; the cover still has to come first."""
+    fallback = expand.default_image_briefs("cardigan", "worsted", ["cotton"])
+    shuffled = {
+        "image_briefs": [
+            {"key": "texture", "prompt": "a macro shot of crochet fabric stitches close up"},
+            {"key": "materials", "prompt": "a flat lay of yarn balls and a hook on pale linen"},
+            {"key": "cover", "prompt": "a folded cardigan on pale linen with room for a title"},
+        ]
+    }
+    ordered = imagery._by_priority(imagery.normalise_briefs(shuffled, fallback))
+    assert ordered[0]["key"] == "cover"
+
+
+def test_default_briefs_lead_with_the_cover():
+    briefs = expand.default_image_briefs("cardigan", "worsted", ["cotton"])
+    assert briefs[0]["key"] == "cover"
+    # on a one-image budget the cover must show the item, not just set a mood
+    assert "cardigan" in briefs[0]["prompt"]
+    assert "space" in briefs[0]["prompt"].lower()   # room for the title block
+
+
+def test_lean_run_puts_exactly_one_photo_in_the_pdf(tmp_path, offline):
+    source = tmp_path / "src.txt"
+    source.write_text(SOURCE_TEXT, encoding="utf-8")
+    result = build_crochet(
+        CrochetSpec(
+            mode="from_pdfs", source_files=[str(source)], garment="cardigan",
+            cost_mode="lean", listing_image_count=0,
+        ),
+        out_dir=tmp_path / "run", settings=offline,
+    )
+    manifest = json.loads((result.run_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert list(manifest["files"]["art"]) == ["cover"]
+    # the technical diagrams are free and stay
+    assert len(manifest["files"]["diagrams"]) >= 6
+    assert manifest["verification"]["ok"]
+
+
+# ---------------------------------------------------------------- mockups off
+def test_listing_images_can_be_switched_off(tmp_path, offline):
+    source = tmp_path / "src.txt"
+    source.write_text(SOURCE_TEXT, encoding="utf-8")
+    result = build_crochet(
+        CrochetSpec(
+            mode="from_pdfs", source_files=[str(source)], garment="cardigan",
+            cost_mode="lean", listing_image_count=0,
+        ),
+        out_dir=tmp_path / "run", settings=offline,
+    )
+    manifest = json.loads((result.run_dir / "manifest.json").read_text(encoding="utf-8"))
+
+    assert manifest["mockups_enabled"] is False
+    assert manifest["files"]["listing_images"] == []
+    assert result.listing_images == []
+    assert not list((result.run_dir / "mockups").glob("*.jpg"))
+    # the product is still complete without them
+    assert result.pdf_path.exists() and result.zip_path.exists()
+    assert manifest["verification"]["ok"]
+    assert manifest["listing"]["tags"]
+
+
+def test_listing_images_are_still_produced_when_asked_for(tmp_path, offline):
+    source = tmp_path / "src.txt"
+    source.write_text(SOURCE_TEXT, encoding="utf-8")
+    result = build_crochet(
+        CrochetSpec(
+            mode="from_pdfs", source_files=[str(source)], garment="cardigan",
+            cost_mode="lean", listing_image_count=2,
+        ),
+        out_dir=tmp_path / "run", settings=offline,
+    )
+    manifest = json.loads((result.run_dir / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["mockups_enabled"] is True
+    assert len(manifest["files"]["listing_images"]) == 2
+
+
+@pytest.mark.parametrize(("given", "clamped"), [(-5, 0), (0, 0), (3, 3), (99, 10)])
+def test_listing_image_count_is_clamped_but_zero_is_allowed(given, clamped):
+    spec = validate(CrochetSpec(mode="from_brief", brief="a hat", listing_image_count=given))
+    assert spec.listing_image_count == clamped
+
+
 def test_build_imagery_renders_plates_offline(tmp_path):
     pattern = expand.template_pattern(garment="cardigan")
     result = imagery.build_imagery(

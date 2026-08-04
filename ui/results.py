@@ -50,6 +50,12 @@ def show(manifest: dict, run_dir: str | Path, compact: bool = False) -> None:
             for row_start in range(0, len(images), 3):
                 for column, path in zip(st.columns(3), images[row_start : row_start + 3]):
                     column.image(str(path), caption=path.stem, use_container_width=True)
+        elif manifest.get("mockups_enabled") is False:
+            theme.note(
+                "Listing images were turned off for this run. Set the listing images "
+                "slider above 0 to generate them.",
+                "info",
+            )
         else:
             theme.note("No mockups were produced for this run.", "warn")
 

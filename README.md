@@ -196,9 +196,13 @@ modes differ almost entirely in how many images they generate, at what quality, 
 | Mode | AI images | Model / quality | Per pattern |
 |---|---|---|---|
 | Free art | 0 | painted locally with Pillow | ~$0.002 |
-| **Lean** (default) | 1 cover | `gpt-image-1-mini` low | **~$0.01** |
-| Standard | 3 | `gpt-image-1-mini` medium | ~$0.05 |
+| **One cover image** (default) | 1 | `gpt-image-1-mini` medium | **~$0.02** |
+| Cover + interior photos | 3 | `gpt-image-1-mini` medium | ~$0.05 |
 | Premium | 5 | `gpt-image-1.5` high | ~$1.02 |
+
+A limited budget is always spent on the **cover** first (`imagery.PLATE_PRIORITY`), because that one
+plate earns its cost twice: it is the first page of the PDF *and* the hero image in Etsy search.
+Interior plates are decorative, and their pages simply omit the photo when it is not there.
 
 The studio shows the estimate before you press the button. Three things keep it down:
 
@@ -215,6 +219,12 @@ The studio shows the estimate before you press the button. Three things keep it 
 
 `manifest.json` records what was actually billed versus served from cache, so you can check a run
 rather than trust an estimate.
+
+**Listing mockups can be turned off.** Set the listing images slider to 0 and the eight Etsy
+composites (hero, page grid, what's included, detail crop, desk scene, print stack, gift bundle,
+size chart) are skipped. They cost nothing to make - they are Pillow composites of the rendered PDF
+pages - but they are the slowest stage of a build, so skipping them makes iterating much faster. The
+PDF, the diagrams, the Etsy copy and the buyer ZIP are all still produced.
 
 ### Batch: many patterns from one upload set
 

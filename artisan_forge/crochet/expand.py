@@ -693,18 +693,25 @@ def _template_counts(primary: str, panel_sts: int) -> list[dict]:
 
 
 def default_image_briefs(garment: str, weight: str, fibres: list[str]) -> list[dict]:
-    """The photographic plates a pattern document needs."""
+    """The photographic plates a pattern document needs, most valuable first.
+
+    Order matters: a run on a limited image budget takes them from the top, and
+    the cover is the only plate that is genuinely load-bearing. It is the first
+    page of the PDF and the hero image in Etsy search, so on a one-image budget
+    it has to show the finished item clearly rather than just set a mood.
+    """
     fibre = (fibres or ["cotton"])[0]
     return [
         {
-            "key": "materials",
-            "caption": "Everything you need before you start",
+            "key": "cover",
+            "caption": f"The finished {garment}",
             "prompt": (
-                f"Overhead flat-lay photograph of crochet materials on a pale linen surface: "
-                f"three neat balls of {weight} weight {fibre} yarn in soft neutral tones, one "
-                "aluminium crochet hook, a tapestry needle, small brass stitch markers and a "
-                "cloth tape measure. Soft diffused daylight, shallow depth of field, calm "
-                "editorial styling, generous negative space, no text, no hands."
+                f"Editorial cover photograph for a crochet pattern booklet: a hand-crocheted "
+                f"{garment} in soft neutral {weight} weight {fibre} yarn, clearly and completely "
+                "visible, styled on a pale linen background. Soft natural daylight raking across "
+                "the fabric so the stitch texture reads clearly. Generous empty space across the "
+                "upper third for a title. Calm minimal editorial styling, no text, no letters, "
+                "no people, no logos."
             ),
         },
         {
@@ -718,22 +725,23 @@ def default_image_briefs(garment: str, weight: str, fibres: list[str]) -> list[d
             ),
         },
         {
+            "key": "materials",
+            "caption": "Everything you need before you start",
+            "prompt": (
+                f"Overhead flat-lay photograph of crochet materials on a pale linen surface: "
+                f"three neat balls of {weight} weight {fibre} yarn in soft neutral tones, one "
+                "aluminium crochet hook, a tapestry needle, small brass stitch markers and a "
+                "cloth tape measure. Soft diffused daylight, shallow depth of field, calm "
+                "editorial styling, generous negative space, no text, no hands."
+            ),
+        },
+        {
             "key": "texture",
             "caption": "Stitch detail at close range",
             "prompt": (
                 f"Extreme close-up macro photograph of {weight} weight {fibre} crochet fabric, "
                 "showing individual stitches and the ridged texture in sharp detail, soft raking "
                 "daylight, neutral tones, shallow depth of field, no text."
-            ),
-        },
-        {
-            "key": "cover",
-            "caption": "",
-            "prompt": (
-                f"Calm, modern cover photograph for a crochet pattern booklet: a folded "
-                f"hand-crocheted {garment} in soft neutral {fibre} yarn on a pale background, "
-                "generous empty space across the upper third for a title, soft daylight, "
-                "minimal editorial styling, no text, no letters, no people."
             ),
         },
     ]

@@ -127,14 +127,15 @@ COST_PROFILES: dict[str, CostProfile] = {
         note="Artwork is painted locally. ChatGPT still writes the pattern.",
     ),
     "lean": CostProfile(
-        key="lean", label="Lean", plates=1, image_model="gpt-image-1-mini",
-        image_quality="low",
-        note="One AI cover photo; the rest painted locally.",
+        key="lean", label="One cover image", plates=1,
+        image_model="gpt-image-1-mini", image_quality="medium",
+        note="A single AI cover photo, which is also the hero listing image. "
+             "Every diagram is still drawn locally at no cost.",
     ),
     "standard": CostProfile(
-        key="standard", label="Standard", plates=3, image_model="gpt-image-1-mini",
-        image_quality="medium",
-        note="Cover, materials and finished-item photos.",
+        key="standard", label="Cover + interior photos", plates=3,
+        image_model="gpt-image-1-mini", image_quality="medium",
+        note="Cover, finished-item and materials photos.",
     ),
     "premium": CostProfile(
         key="premium", label="Premium", plates=5, image_model="gpt-image-1.5",
@@ -144,12 +145,23 @@ COST_PROFILES: dict[str, CostProfile] = {
 }
 DEFAULT_COST_MODE = "lean"
 
-# Human-readable dropdown labels, with the estimated price baked in.
+# Human-readable dropdown labels, with the estimated price baked in. Sub-cent
+# estimates are shown to three decimals so "free" and "lean" are distinguishable.
 COST_MODES: dict[str, str] = {
     key: (
         f"{profile.label} \u2014 "
-        + (f"{profile.plates} AI image(s)" if profile.plates else "no AI images")
-        + f", about ${profile.estimate():.2f} per pattern"
+        + (
+            f"{profile.plates} image on {profile.image_model}"
+            if profile.plates == 1 else
+            f"{profile.plates} images on {profile.image_model}"
+            if profile.plates else "no AI images"
+        )
+        + (
+            f", about ${profile.estimate():.3f}"
+            if profile.estimate() < 0.10 else
+            f", about ${profile.estimate():.2f}"
+        )
+        + " per pattern"
     )
     for key, profile in COST_PROFILES.items()
 }
@@ -371,7 +383,10 @@ def validate(spec: CrochetSpec) -> CrochetSpec:
 
     spec.theme = get_theme(spec.theme).key
     spec.cost_mode = spec.cost_mode if spec.cost_mode in COST_PROFILES else DEFAULT_COST_MODE
-    spec.listing_image_count = max(1, min(10, spec.listing_image_count))
+    # 0 turns the listing mockups off entirely. They are free to make (Pillow
+    # composites of the rendered PDF pages) but they are the slowest stage of a
+    # build, so being able to skip them matters.
+    spec.listing_image_count = max(0, min(10, spec.listing_image_count))
     spec.bleed_in = max(0.0, min(0.25, spec.bleed_in))
     spec.pattern_count = max(1, min(MAX_PATTERNS_PER_RUN, spec.pattern_count))
     spec.sources_per_pattern = max(0, min(MAX_SOURCE_FILES, spec.sources_per_pattern))
@@ -930,20 +945,23 @@ def build_crochet(
     for error in result.verification.get("errors", []):
         result.warnings.append(f"Verification: {error}")
 
-    # 6. mockups
-    report("Compositing listing images", 0.74)
-    try:
-        result.listing_images = build_listing_images(
-            mockup_context(spec, pattern, pages),
-            pdf_path,
-            mock_dir,
-            count=spec.listing_image_count,
-            progress=None if progress is None else (
-                lambda message, fraction: report(message, 0.74 + 0.16 * fraction)
-            ),
-        )
-    except Exception as exc:  # noqa: BLE001 - never lose the PDF over a mockup
-        result.warnings.append(f"Mockups failed: {type(exc).__name__}: {exc}")
+    # 6. mockups (skipped entirely when listing_image_count is 0)
+    if spec.listing_image_count > 0:
+        report("Compositing listing images", 0.74)
+        try:
+            result.listing_images = build_listing_images(
+                mockup_context(spec, pattern, pages),
+                pdf_path,
+                mock_dir,
+                count=spec.listing_image_count,
+                progress=None if progress is None else (
+                    lambda message, fraction: report(message, 0.74 + 0.16 * fraction)
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001 - never lose the PDF over a mockup
+            result.warnings.append(f"Mockups failed: {type(exc).__name__}: {exc}")
+    else:
+        report("Skipping listing images", 0.9)
 
     # 7. packaging - market research first, so the listing is keyword-led
     report("Analysing market data and writing listing copy", 0.9)
@@ -1010,6 +1028,7 @@ def build_crochet(
         "spec": spec.to_dict(),
         "pages": len(pages),
         "page_kinds": [page["kind"] for page in pages],
+        "mockups_enabled": spec.listing_image_count > 0,
         "steps": expand.total_steps(pattern),
         "sizes": (pattern.get("sizes") or {}).get("labels") or [],
         "skill_level": pattern.get("skill_level"),

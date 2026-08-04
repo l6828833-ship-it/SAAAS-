@@ -36,6 +36,19 @@ PLATE_SIZES = {
 }
 DEFAULT_SIZE = LANDSCAPE
 
+# Where to spend a limited image budget, most valuable first. The cover earns its
+# cost twice over - it is the first page of the PDF *and* the hero listing image
+# that shows in Etsy search results - so a one-image run must buy the cover. The
+# interior plates are decorative and their pages simply omit the photo when it is
+# not there.
+PLATE_PRIORITY = ("cover", "finished", "materials", "texture", "styled")
+
+
+def _by_priority(briefs: list[dict]) -> list[dict]:
+    """Order briefs so the budget is spent on the plates that matter."""
+    rank = {slot: index for index, slot in enumerate(PLATE_PRIORITY)}
+    return sorted(briefs, key=lambda b: rank.get(b.get("key", ""), len(rank)))
+
 # Appended to every prompt so the set looks like one photoshoot.
 HOUSE_STYLE = (
     "Photographic, not illustrated. Soft natural daylight, calm neutral styling, "
@@ -134,7 +147,8 @@ def render_plates(
 
     plates: dict[str, Path] = {}
     prompts: dict[str, str] = {}
-    chosen = briefs[: max(0, limit)]
+    # Spend the budget on the cover first, whatever order the briefs arrived in.
+    chosen = _by_priority(briefs)[: max(0, limit)]
     for index, brief in enumerate(chosen, start=1):
         slot = brief["key"]
         prompt = f"{brief['prompt']} {HOUSE_STYLE}".strip()

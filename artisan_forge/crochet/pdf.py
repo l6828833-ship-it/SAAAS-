@@ -101,8 +101,9 @@ class CrochetPDF(DrawKit):
             pages.extend(self._trouble_pages(p["troubleshooting"]))
         if p.get("care"):
             pages.append({"kind": "care"})
-        if self.include_gallery and ("finished" in self.plates or "styled" in self.plates):
-            pages.append({"kind": "gallery"})
+        gallery_slots = [s for s in ("finished", "styled", "texture") if s in self.plates]
+        if self.include_gallery and gallery_slots:
+            pages.append({"kind": "gallery", "slots": gallery_slots})
         pages.append({"kind": "thanks"})
 
         # contents goes after the cover, once we know what the pages are
@@ -1192,7 +1193,9 @@ class CrochetPDF(DrawKit):
         cursor = self._page_title(c, "Gallery", eyebrow="the finished piece")
         x, y, width, _ = self.content_box()
 
-        slots = [s for s in ("finished", "styled", "texture") if s in self.plates]
+        slots = page.get("slots") or [
+            s for s in ("finished", "styled", "texture") if s in self.plates
+        ]
         if not slots:
             return
         if len(slots) == 1:

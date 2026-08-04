@@ -524,7 +524,13 @@ def render(user: dict) -> None:
         audience = col_e.text_input(
             "Who is it for?", value="confident hobby crocheters", key="crochet_audience"
         )
-        images = col_f.slider("Listing images", 1, 10, 8, key="crochet_images")
+        images = col_f.slider(
+            "Listing images", 0, 10, 0, key="crochet_images",
+            help="Etsy mockups composited from the PDF pages. 0 turns them off. "
+                 "They cost nothing but are the slowest part of a build.",
+        )
+        if int(images) == 0:
+            col_f.caption("Mockups off \u2014 PDF, diagrams and listing copy only.")
         include_chart = col_d.checkbox("Include stitch chart page", value=True, key="crochet_chart")
         include_gallery = col_e.checkbox("Include gallery page", value=True, key="crochet_gallery")
         bleed = col_f.number_input(
@@ -587,7 +593,9 @@ def render(user: dict) -> None:
         f"<div style='color:#9A9AAE;font-size:.88rem;margin:.4rem 0 .8rem'>"
         f"{batch_note}"
         f"<b style='color:#ECECF1'>{MODES[mode]}</b> \u00b7 {spec.size_label} {spec.orientation} "
-        f"\u00b7 {len(spec.sizes) or 1} size(s) \u00b7 {int(images)} listing images each</div>",
+        f"\u00b7 {len(spec.sizes) or 1} size(s) \u00b7 "
+        + (f"{int(images)} listing images each" if int(images) else "no listing images")
+        + "</div>",
         unsafe_allow_html=True,
     )
 
