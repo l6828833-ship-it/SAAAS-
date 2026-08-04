@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 try:  # optional dependency
@@ -50,6 +50,14 @@ class Settings:
     force_offline: bool = field(default_factory=lambda: _flag("AF_OFFLINE"))
     output_dir: Path = field(default_factory=lambda: Path(os.getenv("AF_OUTPUT_DIR", "output")))
 
+    # Cheaper stand-ins used by "lean" cost modes. See `lean()`.
+    cheap_text_model: str = field(
+        default_factory=lambda: _clean("AF_TEXT_MODEL_CHEAP", "gpt-4o-mini")
+    )
+    cheap_image_model: str = field(
+        default_factory=lambda: _clean("AF_IMAGE_MODEL_CHEAP", "gpt-image-1-mini")
+    )
+
     etsy_keystring: str | None = field(default_factory=lambda: _clean("ETSY_KEYSTRING") or None)
     etsy_shared_secret: str | None = field(
         default_factory=lambda: _clean("ETSY_SHARED_SECRET") or None
@@ -67,7 +75,10 @@ class Settings:
         default_factory=lambda: os.getenv("CANVA_CLIENT_SECRET") or None
     )
     canva_access_token: str | None = field(
-        default_factory=lambda: os.getenv("CANVA_ACCESS_TOKEN") or None
+        default_factory=lambda: _clean("CANVA_ACCESS_TOKEN") or None
+    )
+    canva_refresh_token: str | None = field(
+        default_factory=lambda: _clean("CANVA_REFRESH_TOKEN") or None
     )
 
     @property
@@ -78,6 +89,19 @@ class Settings:
     @property
     def canva_available(self) -> bool:
         return bool(self.canva_access_token)
+
+    def lean(self) -> "Settings":
+        """A copy that prefers the cheap model tier.
+
+        Used by cost-conscious runs: same pipeline, smaller models, lower image
+        quality. Returns a new object so the caller's settings are untouched.
+        """
+        return replace(
+            self,
+            text_model=self.cheap_text_model or self.text_model,
+            image_model=self.cheap_image_model or self.image_model,
+            image_quality="low",
+        )
 
     @property
     def etsy_configured(self) -> bool:

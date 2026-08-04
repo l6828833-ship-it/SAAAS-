@@ -9,16 +9,23 @@ answers wins. Override the front of the chain with `AF_TEXT_MODEL`.
 
 from __future__ import annotations
 
+import base64
 import json
+import mimetypes
 import os
 import re
 import urllib.error
 import urllib.request
+from pathlib import Path
 from typing import Any
 
 from ..config import Settings, get_settings
 
 CHAT_URL = "https://api.openai.com/v1/chat/completions"
+
+# Keep vision payloads sane: a handful of reference photos is plenty.
+MAX_IMAGES = 6
+MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
 MODEL_CHAIN = ["gpt-5.6-luna", "gpt-5-mini", "gpt-4.1-mini", "gpt-4o-mini"]
 
@@ -34,6 +41,20 @@ def model_chain(settings: Settings | None = None) -> list[str]:
     chain = [m for m in [preferred.strip()] if m]
     chain += [m for m in MODEL_CHAIN if m != preferred]
     return chain
+
+
+def _encode_image(path: Path) -> str | None:
+    """Inline an image as a data URL, or None if it is unusable."""
+    try:
+        if not path.is_file() or path.stat().st_size > MAX_IMAGE_BYTES:
+            return None
+        mime = mimetypes.guess_type(path.name)[0] or "image/png"
+        if not mime.startswith("image/"):
+            return None
+        payload = base64.b64encode(path.read_bytes()).decode("ascii")
+    except Exception:  # noqa: BLE001 - an unreadable reference photo is not fatal
+        return None
+    return f"data:{mime};base64,{payload}"
 
 
 def _extract_json(text: str) -> dict:
@@ -85,12 +106,29 @@ class CopyStudio:
             body = json.loads(response.read().decode("utf-8"))
         return body["choices"][0]["message"]["content"]
 
-    def ask_json(self, prompt: str) -> dict | None:
-        """Ask for a JSON object. Returns None when offline or on failure."""
+    def ask_json(self, prompt: str, images: list[str | Path] | None = None) -> dict | None:
+        """Ask for a JSON object. Returns None when offline or on failure.
+
+        Pass `images` to have the model look at pictures alongside the prompt -
+        used when a pattern is reverse-engineered from photos of a finished
+        piece. Unreadable files are skipped with a warning rather than failing.
+        """
         if self.offline:
             return None
 
-        messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": prompt}]
+        content: str | list[dict] = prompt
+        if images:
+            parts: list[dict] = [{"type": "text", "text": prompt}]
+            for path in list(images)[:MAX_IMAGES]:
+                encoded = _encode_image(Path(path))
+                if encoded:
+                    parts.append({"type": "image_url", "image_url": {"url": encoded}})
+                else:
+                    self.warnings.append(f"Could not attach image {Path(path).name}")
+            if len(parts) > 1:
+                content = parts
+
+        messages = [{"role": "system", "content": SYSTEM}, {"role": "user", "content": content}]
         last_error: Exception | None = None
         for model in model_chain(self.settings):
             for use_schema in (True, False):

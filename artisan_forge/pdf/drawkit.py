@@ -152,8 +152,10 @@ class DrawKit:
         obj = c.beginText(x, y)
         obj.setFont(font, size)
         obj.setFillColor(color_of(color))
-        if tracking:
-            obj.setCharSpace(tracking)
+        # Character spacing is part of the PDF text state, which persists across
+        # BT/ET blocks. Always emit it, so a tracked heading cannot leak its
+        # letter-spacing into every line of body copy drawn after it.
+        obj.setCharSpace(tracking)
         obj.textOut(text)
         c.drawText(obj)
         return width

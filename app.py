@@ -15,6 +15,7 @@ from ui import (
     auth_view,
     bundle_studio,
     calendar_studio,
+    crochet_studio,
     dashboard,
     etsy_panel,
     library,
@@ -42,6 +43,7 @@ WORKSPACE = [
     ("Dashboard", "\U0001f3e0"),
     ("Calendar Studio", "\U0001f4c5"),
     ("Bundle Studio", "\u2728"),
+    ("Crochet Studio", "\U0001f9f6"),
 ]
 SOON = [
     ("Planner Studio", "\U0001f5d3\ufe0f", "planner"),
@@ -107,6 +109,8 @@ elif page == "Calendar Studio":
     calendar_studio.render(user)
 elif page == "Bundle Studio":
     bundle_studio.render(user)
+elif page == "Crochet Studio":
+    crochet_studio.render(user)
 elif page in soon_keys:
     soon.render(soon_keys[page])
 elif page == "Library":

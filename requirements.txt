@@ -1,8 +1,11 @@
 # --- Core engine (required) ---
 reportlab==4.2.5          # vector PDF generation (calendar pages)
 pillow==11.0.0            # raster compositing (mockups, procedural art)
-pypdfium2==4.30.0         # PDF -> PNG rasterizing for mockup previews
+pypdfium2==4.30.0         # PDF -> PNG rasterizing + source pattern text extraction
 python-dotenv==1.0.1      # .env loading
+
+# --- Technical diagrams (crochet schematics, stitch charts, seam diagrams) ---
+matplotlib==3.9.2         # optional: diagram pages are skipped if it is missing
 
 # --- Frontend (dashboard + accounts) ---
 streamlit==1.60.0

@@ -19,6 +19,7 @@ dependencies = [
 [project.optional-dependencies]
 ui = ["streamlit>=1.36"]
 ai = ["openai>=1.40"]
+diagrams = ["matplotlib>=3.8"]
 dev = ["pytest>=8.0"]
 
 [project.scripts]

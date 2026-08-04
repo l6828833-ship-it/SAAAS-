@@ -109,8 +109,8 @@ def test_change_password(fresh_db):
 # ------------------------------------------------------------------- catalog
 def test_catalog_has_live_and_soon_products():
     keys = {p.key for p in products.catalog()}
-    assert {"calendar", "bundle", "planner", "wall_art"} <= keys
-    assert {p.key for p in products.live()} == {"calendar", "bundle"}
+    assert {"calendar", "bundle", "crochet", "planner", "wall_art"} <= keys
+    assert {p.key for p in products.live()} == {"calendar", "bundle", "crochet"}
     assert all(p.eta for p in products.coming_soon())
     assert products.get("calendar").is_live
     assert products.get("nope") is None
@@ -224,6 +224,7 @@ def test_signup_then_every_page_renders(app_test):
         "Dashboard",
         "Calendar Studio",
         "Bundle Studio",
+        "Crochet Studio",
         "Planner Studio",
         "Wall Art Studio",
         "Journal Studio",
@@ -243,6 +244,12 @@ def test_signup_then_every_page_renders(app_test):
     app.session_state["nav"] = "Bundle Studio"
     app.run()
     assert any("Generate bundle" in button.label for button in app.button)
+
+    app.session_state["nav"] = "Crochet Studio"
+    app.run()
+    assert any("Generate pattern" in button.label for button in app.button)
+    # the five features are offered as one dropdown
+    assert any(len(box.options) == 5 for box in app.selectbox)
 
 
 def test_library_renders_a_build_with_the_etsy_publish_tab(app_test, tmp_path):

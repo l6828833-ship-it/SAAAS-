@@ -42,6 +42,20 @@ CATALOG: tuple[ProductType, ...] = (
         outputs=("Multi-page PDF bundle", "Listing images", "Etsy copy", "Buyer ZIP"),
     ),
     ProductType(
+        key="crochet",
+        label="Crochet Studio",
+        tagline="Upload patterns or Etsy data, get a graded pattern PDF with diagrams",
+        icon="\U0001f9f6",
+        status="live",
+        outputs=(
+            "Graded pattern PDF with stitch counts",
+            "Technical diagrams and schematic",
+            "Listing images",
+            "Etsy copy",
+            "Buyer ZIP",
+        ),
+    ),
+    ProductType(
         key="planner",
         label="Planner Studio",
         tagline="Dated and undated weekly, daily and habit planners",

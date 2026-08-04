@@ -15,6 +15,7 @@ python -m artisan_forge "2026 minimalist calendar with watercolor floral theme, 
 |---|---|---|
 | \U0001f4c5 Calendar Studio | live | 12-month printable calendars, dates verified twice |
 | \u2728 Bundle Studio | live | ChatGPT writes prompts, checklists, trackers and affirmations; the engine lays them out |
+| \U0001f9f6 Crochet Studio | live | Graded crochet patterns from uploaded PDFs, Etsy data, a brief or photos, with technical diagrams |
 | \U0001f5d3\ufe0f Planner Studio | coming soon | dated/undated weekly, daily and habit planners |
 | \U0001f5bc\ufe0f Wall Art Studio | coming soon | quote posters in every Etsy ratio |
 | \U0001f4d3 Journal Studio | coming soon | low-content books, KDP trim sizes |
@@ -65,7 +66,9 @@ with Pillow, so every build still completes end to end.
 | Accounts & library | SQLite + scrypt | `artisan_forge/saas/` |
 | Product catalog | dataclasses | `artisan_forge/products/__init__.py` |
 | CLI | argparse | `artisan_forge/cli.py` |
-| Orchestration | plain Python | `artisan_forge/pipeline.py`, `products/bundle.py` |
+| Orchestration | plain Python | `artisan_forge/pipeline.py`, `products/bundle.py`, `products/crochet.py` |
+| Crochet engine | pypdfium2 + matplotlib + reportlab | `artisan_forge/crochet/` |
+| Technical diagrams | matplotlib (optional) | `artisan_forge/crochet/diagrams.py` |
 | Brief parsing | regex + theme scoring | `artisan_forge/brief.py` |
 | Page geometry & primitives | reportlab | `artisan_forge/pdf/drawkit.py` |
 | Page components | reportlab | `artisan_forge/pdf/blocks.py` |
@@ -112,7 +115,7 @@ build (`strict_dates=True`); rendering anomalies are surfaced as warnings.
 
 ```bash
 python -m artisan_forge --verify 1900-2200     # both week starts, all months
-python -m pytest                               # 84 checks: dates, accounts, bundle, Etsy, UI
+python -m pytest                               # 145 checks: dates, accounts, bundle, crochet, Etsy, UI
 ```
 
 The UI suite drives the real app through Streamlit's `AppTest`, signing up an account and rendering
@@ -138,6 +141,55 @@ that answers (`AF_TEXT_MODEL` goes to the front). Every model response is passed
 `normalise_plan`, which drops unknown sections, fills missing fields from templates and clamps
 lengths - a malformed response degrades instead of breaking the build. With no API key the whole
 studio runs on templates.
+
+## Crochet Studio
+
+One dropdown, five ways in. Every mode then runs the same pipeline, so the output is always a
+complete, graded, branded pattern document.
+
+| Mode | Input | What it does |
+|---|---|---|
+| Rebuild from uploaded patterns | up to 10 PDFs | parses every row, stitch count, gauge and abbreviation out of patterns you own, then rewrites one complete graded pattern from what they contain |
+| From my Etsy product data | CSV / JSON / pasted text + a product number | reads the whole catalogue, builds the pattern for the product you numbered, and writes that pattern's Etsy listing using your existing tags as signal |
+| From a written brief | one sentence | a full pattern from a description |
+| From photos | up to 6 photos | ChatGPT reads the stitch pattern, construction and gauge back off the images |
+| Diagrams and tech pack | a description | diagrams only, no API calls, free to run |
+
+The five stages, in order:
+
+1. **Content extraction** - `crochet/extract.py` reads each upload with pypdfium2 and pulls out the
+   title, hooks, yarn weight, gauge, abbreviations, every numbered row with its stitch count,
+   measurements, sizes and the assembly steps. Deterministic, free, and it gives the model a compact
+   structured brief instead of tens of thousands of raw characters.
+2. **Content expansion** - `crochet/expand.py` asks ChatGPT for everything a self-published pattern
+   usually lacks: stitch counts, troubleshooting, yarn guide with yardage per size, care
+   instructions, seaming methods, graded sizing tables, blocking guide, skill requirements and
+   project time estimates. `normalise_pattern` makes any response safe to render.
+3. **Diagram generation** - `crochet/diagrams.py` draws the technical plates with matplotlib from
+   the pattern's own numbers: construction schematic with dimension arrows, stitch chart with a
+   symbol legend, foundation-row illustration, one seam diagram per method used, gauge swatch, body
+   measurement guide and a yardage chart.
+4. **Image prompts, artwork and Canva** - ChatGPT writes the photographic prompts, they are
+   rendered, and the renders are pushed to Canva as editable designs. Canva's Connect API has no
+   text-to-image endpoint, so the flow is a round trip: prompt -> render -> Canva design -> optional
+   export back into the PDF.
+5. **Layout and packaging** - `crochet/pdf.py` assembles roughly 26 pages: cover, credits and
+   licence, contents, about, materials, yarn guide, gauge, sizing, abbreviations, construction,
+   foundation, chart, the instructions, stitch count reference, assembly, a page per seaming method,
+   blocking, troubleshooting, care, gallery and a branded thank-you page. Then listing images, Etsy
+   copy and the buyer ZIP.
+
+Branding is threaded through every page: shop name, designer credit, support email, website,
+Instagram, Ravelry, tagline, logo, accent colour, and a personal-use or small-business licence.
+
+Long sections paginate themselves - `page_plan()` measures wrapped text against the available
+height, so instructions flow onto as many pages as they need. After rendering, the PDF is re-opened
+and every section title and step label is confirmed present, so a layout bug cannot silently drop
+instructions.
+
+Cost is explicit. `lean` uses the cheap model tier (`AF_TEXT_MODEL_CHEAP`, `AF_IMAGE_MODEL_CHEAP`)
+and renders 2 images; `standard` and `max` render 5. The tech pack mode makes no API calls at all.
+With no keys the studio still produces the full document from templates and procedural art.
 
 ## AI art
 
@@ -193,9 +245,16 @@ access review.
 
 ## Canva (optional)
 
-Add `CANVA_ACCESS_TOKEN` (scopes `asset:write`, `design:content:write`) and pass `--canva`. The
-cover art is uploaded and an editable design is created; the edit URL comes back in
-`manifest.json`. Without a token the step reports `skipped` and the build continues.
+Add `CANVA_ACCESS_TOKEN` (scopes `asset:write`, `design:content:write`, plus
+`design:content:read` if you want to export designs back out) and pass `--canva`. The cover art is
+uploaded and an editable design is created; the edit URL comes back in `manifest.json`. Without a
+token the step reports `skipped` and the build continues.
+
+Canva does **not** expose a text-to-image endpoint - the Connect API covers assets, designs,
+exports, brand templates and autofill. So "let Canva make the picture" is really a round trip:
+ChatGPT writes the prompt, the image is rendered, the render becomes an editable Canva design, and
+Crochet Studio can optionally export it straight back and place the Canva version in the pattern
+PDF. See `artisan_forge/canva/client.py` (`round_trip`, `send_plates_to_canva`).
 
 ## Python API
 

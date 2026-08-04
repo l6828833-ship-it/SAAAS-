@@ -14,6 +14,7 @@ from .results import load_manifest
 NAV_FOR = {
     "calendar": "Calendar Studio",
     "bundle": "Bundle Studio",
+    "crochet": "Crochet Studio",
     "planner": "Planner Studio",
     "wall_art": "Wall Art Studio",
     "journal": "Journal Studio",
