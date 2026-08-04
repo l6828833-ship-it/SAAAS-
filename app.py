@@ -33,14 +33,21 @@ st.set_page_config(
 theme.inject()
 db.init_db()
 
+# Canva redirects here after authorization. This MUST run before the auth gate
+# because the redirect kills the Streamlit session (user appears logged out).
+# The handler persists the token to disk and shows a success/error message,
+# then the user signs back in normally.
+canva_panel.handle_callback()
+
+# Load saved Canva token from disk into the environment on every page load.
+canva_panel.ensure_token_loaded()
+
 user = auth_view.gate()
 if not user:
     st.stop()
 
 # Etsy sends the OAuth code back to this same URL.
 etsy_panel.handle_callback(user)
-# Canva also redirects here after authorization.
-canva_panel.handle_callback()
 
 WORKSPACE = [
     ("Dashboard", "\U0001f3e0"),
