@@ -218,12 +218,13 @@ def build_imagery(
         if answer:
             briefs = normalise_briefs(answer, fallback)
 
-    if not briefs:
-        warnings.append("No image briefs were available - photographic plates were skipped")
+    if not briefs or plate_limit <= 0:
+        if not briefs:
+            warnings.append("No image briefs were available - photographic plates were skipped")
         return {
             "plates": {}, "prompts": {}, "captions": {}, "source": "none",
             "canva": {"status": "skipped", "reason": "No artwork was produced"},
-            "warnings": warnings,
+            "warnings": warnings, "generated": 0, "cache_hits": 0,
         }
 
     plates, prompts, studio = render_plates(
@@ -258,4 +259,7 @@ def build_imagery(
         "source": studio.source,
         "canva": canva_status,
         "warnings": warnings,
+        # what was actually billed, versus served from the prompt cache
+        "generated": studio.generated,
+        "cache_hits": studio.cache_hits,
     }

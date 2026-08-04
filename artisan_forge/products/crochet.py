@@ -66,12 +66,98 @@ MAX_SOURCE_FILES = 10
 MAX_PHOTOS = 6
 MAX_PATTERNS_PER_RUN = 10
 
-COST_MODES = {
-    "lean": "Lean - cheap models, 2 images, one chat call",
-    "standard": "Standard - default models, 5 images",
-    "max": "Maximum quality - best models, 5 large images",
+# ------------------------------------------------------------------ cost model
+# Photographic plates are essentially the entire cost of a run: the pattern text
+# is a few thousand tokens (fractions of a cent), while one high-quality
+# gpt-image-1.5 render is around $0.19. So the cost modes differ almost entirely
+# in how many images they generate, at what quality, on which model.
+#
+# Per-image prices below are OpenAI list prices for a 1024x1024 output, scaled
+# up by ~1.5x for portrait/landscape plates. They are used only to show an
+# estimate in the UI, so being slightly stale is harmless.
+IMAGE_PRICE_USD: dict[tuple[str, str], float] = {
+    ("gpt-image-1.5", "low"): 0.009,
+    ("gpt-image-1.5", "medium"): 0.034,
+    ("gpt-image-1.5", "high"): 0.133,
+    ("gpt-image-1-mini", "low"): 0.005,
+    ("gpt-image-1-mini", "medium"): 0.011,
+    ("gpt-image-1-mini", "high"): 0.052,
 }
-PLATES_FOR_COST = {"lean": 2, "standard": 5, "max": 5}
+# Non-square plates cost roughly half again as much as a square one.
+NON_SQUARE_FACTOR = 1.5
+# A pattern run is a couple of chat calls of a few thousand tokens.
+TEXT_COST_USD = {"cheap": 0.002, "default": 0.02}
+
+
+@dataclass(frozen=True)
+class CostProfile:
+    """What a cost mode actually spends."""
+
+    key: str
+    label: str
+    plates: int                 # AI-generated photographic plates
+    image_model: str | None     # None -> no AI images at all
+    image_quality: str = "low"
+    cheap_text: bool = True
+    note: str = ""
+
+    def image_cost(self) -> float:
+        if not self.image_model or self.plates <= 0:
+            return 0.0
+        unit = IMAGE_PRICE_USD.get((self.image_model, self.image_quality), 0.05)
+        return self.plates * unit * NON_SQUARE_FACTOR
+
+    def text_cost(self) -> float:
+        return TEXT_COST_USD["cheap" if self.cheap_text else "default"]
+
+    def estimate(self, pattern_count: int = 1, shared_art: bool = False) -> float:
+        """Estimated USD for a whole run.
+
+        With `shared_art` the photographic plates are generated once and reused
+        across the batch, so only the text scales with the number of patterns.
+        """
+        count = max(1, pattern_count)
+        images = self.image_cost() * (1 if shared_art else count)
+        return round(images + self.text_cost() * count, 4)
+
+
+COST_PROFILES: dict[str, CostProfile] = {
+    "free": CostProfile(
+        key="free", label="Free art", plates=0, image_model=None,
+        note="Artwork is painted locally. ChatGPT still writes the pattern.",
+    ),
+    "lean": CostProfile(
+        key="lean", label="Lean", plates=1, image_model="gpt-image-1-mini",
+        image_quality="low",
+        note="One AI cover photo; the rest painted locally.",
+    ),
+    "standard": CostProfile(
+        key="standard", label="Standard", plates=3, image_model="gpt-image-1-mini",
+        image_quality="medium",
+        note="Cover, materials and finished-item photos.",
+    ),
+    "premium": CostProfile(
+        key="premium", label="Premium", plates=5, image_model="gpt-image-1.5",
+        image_quality="high", cheap_text=False,
+        note="Five plates on the best image model. This is the expensive one.",
+    ),
+}
+DEFAULT_COST_MODE = "lean"
+
+# Human-readable dropdown labels, with the estimated price baked in.
+COST_MODES: dict[str, str] = {
+    key: (
+        f"{profile.label} \u2014 "
+        + (f"{profile.plates} AI image(s)" if profile.plates else "no AI images")
+        + f", about ${profile.estimate():.2f} per pattern"
+    )
+    for key, profile in COST_PROFILES.items()
+}
+PLATES_FOR_COST = {key: profile.plates for key, profile in COST_PROFILES.items()}
+
+
+def cost_profile(mode: str) -> CostProfile:
+    return COST_PROFILES.get(mode, COST_PROFILES[DEFAULT_COST_MODE])
 
 
 @dataclass
@@ -115,7 +201,11 @@ class CrochetSpec:
     include_gallery: bool = True
 
     # generation and cost
-    cost_mode: str = "standard"
+    cost_mode: str = DEFAULT_COST_MODE
+    # Generate the photographic plates once and reuse them across a batch. The
+    # plates are styled stock-alikes, not per-pattern illustrations, so sharing
+    # them cuts the cost of a 4-pattern run to roughly that of a single one.
+    share_art: bool = True
     generate_ai_copy: bool = True
     generate_ai_art: bool = True
     use_canva: bool = False
@@ -139,12 +229,28 @@ class CrochetSpec:
         return self.paper in ("letter", "a4")
 
     @property
+    def profile(self) -> CostProfile:
+        return cost_profile(self.cost_mode)
+
+    @property
     def plate_limit(self) -> int:
-        return PLATES_FOR_COST.get(self.cost_mode, 5)
+        return self.profile.plates
 
     @property
     def offline_only(self) -> bool:
         return self.mode in OFFLINE_MODES
+
+    def estimated_cost_usd(self) -> float:
+        """What this run is likely to cost in API charges.
+
+        An upper bound: identical prompts are served from the image cache, so a
+        rebuild or a batch sharing generic plates costs less than this.
+        """
+        if self.offline_only:
+            return 0.0
+        if not self.generate_ai_copy and not self.generate_ai_art:
+            return 0.0
+        return self.profile.estimate(self.pattern_count, shared_art=False)
 
     def display_title(self) -> str:
         if self.title:
@@ -264,7 +370,7 @@ def validate(spec: CrochetSpec) -> CrochetSpec:
             raise ValueError("Describe what you want to make, in at least 3 characters")
 
     spec.theme = get_theme(spec.theme).key
-    spec.cost_mode = spec.cost_mode if spec.cost_mode in COST_MODES else "standard"
+    spec.cost_mode = spec.cost_mode if spec.cost_mode in COST_PROFILES else DEFAULT_COST_MODE
     spec.listing_image_count = max(1, min(10, spec.listing_image_count))
     spec.bleed_in = max(0.0, min(0.25, spec.bleed_in))
     spec.pattern_count = max(1, min(MAX_PATTERNS_PER_RUN, spec.pattern_count))
@@ -276,6 +382,9 @@ def validate(spec: CrochetSpec) -> CrochetSpec:
         spec.generate_ai_copy = False
         spec.generate_ai_art = False
         spec.use_canva = False
+    # The "free art" profile asks for no plates at all, so paint them locally.
+    if spec.profile.image_model is None or spec.profile.plates <= 0:
+        spec.generate_ai_art = False
     return spec
 
 
@@ -378,7 +487,9 @@ def listing_from_pattern(
             ]
         )
 
-    price = {"lean": 5.50, "standard": 7.50, "max": 9.50}.get(spec.cost_mode, 7.50)
+    # A default only: real competitor pricing overrides it further down. What the
+    # pattern cost to generate has no bearing on what it is worth to a buyer.
+    price = 7.50
     if product is not None and getattr(product, "price", ""):
         try:  # match the shop's own pricing when we know it
             price = round(float(str(product.price).replace(",", ".")) * 0.35, 2) or price
@@ -705,8 +816,12 @@ def build_crochet(
     started = time.perf_counter()
     settings = settings or get_settings()
     spec = validate(spec)
-    if spec.cost_mode == "lean":
-        settings = settings.lean()
+    profile = spec.profile
+    settings = settings.tuned(
+        image_model=profile.image_model,
+        image_quality=profile.image_quality,
+        cheap_text=profile.cheap_text,
+    )
 
     def report(message: str, fraction: float) -> None:
         if progress:
@@ -786,6 +901,8 @@ def build_crochet(
     result.art_paths = dict(art["plates"])
     result.art_source = art["source"]
     result.canva = art["canva"]
+    billed_images = int(art.get("generated", 0))
+    cached_images = int(art.get("cache_hits", 0))
 
     # 5. layout
     report("Laying out the pattern", 0.62)
@@ -898,6 +1015,19 @@ def build_crochet(
         "skill_level": pattern.get("skill_level"),
         "content_source": content_source,
         "art_source": result.art_source,
+        "cost": {
+            "mode": spec.cost_mode,
+            "image_model": profile.image_model,
+            "image_quality": profile.image_quality,
+            "images_billed": billed_images,
+            "images_from_cache": cached_images,
+            "estimated_usd": round(
+                billed_images * IMAGE_PRICE_USD.get(
+                    (profile.image_model or "", profile.image_quality), 0.0
+                ) * NON_SQUARE_FACTOR + profile.text_cost(),
+                4,
+            ),
+        },
         "pattern": pattern,
         "sources": inputs["sources"],
         "etsy_products": len(inputs["products"]),
@@ -963,6 +1093,12 @@ def build_crochet_batch(
     results: list[BuildResult] = []
     failures: list[str] = []
 
+    # Batch cost is kept down by the image cache rather than by copying files
+    # around: the generic plates (materials flat-lay, stitch texture) describe
+    # the yarn rather than the garment, so their prompts hash identically across
+    # the batch and only the first pattern pays for them. Covers stay per-pattern,
+    # because a beanie should not ship with a cardigan on the front.
+
     for index, group in enumerate(groups):
         label = f"Pattern {index + 1} of {total}"
 
@@ -980,6 +1116,9 @@ def build_crochet_batch(
             product_number=(
                 spec.product_number + index if spec.mode == "from_etsy_data" else spec.product_number
             ),
+            # After the first pattern the plates are already in the prompt cache,
+            # so later patterns cost nothing for artwork.
+            share_art=spec.share_art,
         )
 
         target = None

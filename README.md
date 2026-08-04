@@ -187,9 +187,34 @@ height, so instructions flow onto as many pages as they need. After rendering, t
 and every section title and step label is confirmed present, so a layout bug cannot silently drop
 instructions.
 
-Cost is explicit. `lean` uses the cheap model tier (`AF_TEXT_MODEL_CHEAP`, `AF_IMAGE_MODEL_CHEAP`)
-and renders 2 images; `standard` and `max` render 5. The tech pack mode makes no API calls at all.
-With no keys the studio still produces the full document from templates and procedural art.
+### What a run costs
+
+Photographic plates are essentially the whole bill. The pattern text is a few thousand tokens -
+fractions of a cent - while one high-quality `gpt-image-1.5` render is around $0.19. So the cost
+modes differ almost entirely in how many images they generate, at what quality, on which model:
+
+| Mode | AI images | Model / quality | Per pattern |
+|---|---|---|---|
+| Free art | 0 | painted locally with Pillow | ~$0.002 |
+| **Lean** (default) | 1 cover | `gpt-image-1-mini` low | **~$0.01** |
+| Standard | 3 | `gpt-image-1-mini` medium | ~$0.05 |
+| Premium | 5 | `gpt-image-1.5` high | ~$1.02 |
+
+The studio shows the estimate before you press the button. Three things keep it down:
+
+* **Generated images are cached by prompt hash** (`AF_IMAGE_CACHE=1`, `AF_CACHE_DIR=cache`). A
+  rebuild with the same brief costs nothing, and in a batch the generic plates - the materials
+  flat-lay and the stitch close-up describe the *yarn*, not the garment - hash identically across
+  patterns, so only the first one pays. Covers stay per-pattern, because a beanie should not ship
+  with a cardigan on the front.
+* **Every technical diagram is free.** The schematic, stitch chart, foundation row, seam diagrams,
+  gauge swatch, body measurements and yardage chart are drawn locally with matplotlib. They are the
+  most valuable pages in the document and they cost nothing.
+* **The tech pack mode makes no API calls at all**, and with no keys configured the studio still
+  produces the full document from templates and procedural art.
+
+`manifest.json` records what was actually billed versus served from cache, so you can check a run
+rather than trust an estimate.
 
 ### Batch: many patterns from one upload set
 

@@ -8,6 +8,7 @@ credential or a transient API error.
 from __future__ import annotations
 
 import base64
+import hashlib
 import json
 import time
 import urllib.error
@@ -39,6 +40,9 @@ class ImageStudio:
         self.offline = (not self.settings.ai_available) if offline is None else offline
         self.warnings: list[str] = []
         self.source = "procedural" if self.offline else f"openai:{self.settings.image_model}"
+        # Billing counters, reported in the manifest so a run's cost is visible.
+        self.generated = 0
+        self.cache_hits = 0
 
     # ------------------------------------------------------------- geometry
     @staticmethod
@@ -98,6 +102,25 @@ class ImageStudio:
         with urllib.request.urlopen(item["url"], timeout=120) as response:
             return response.read()
 
+    # ---------------------------------------------------------------- caching
+    def _cache_path(self, prompt: str, size: str) -> Path | None:
+        """Where an identical request would already be stored.
+
+        Images are the dominant cost of a build, and rebuilding a product with
+        the same theme and brief asks for byte-identical artwork. Keying on
+        model, quality, size and prompt means a rerun is free.
+        """
+        if not self.settings.image_cache:
+            return None
+        digest = hashlib.sha256(
+            "\u0000".join(
+                [self.settings.image_model, self.settings.image_quality, size, prompt]
+            ).encode("utf-8")
+        ).hexdigest()[:32]
+        folder = self.settings.resolved_cache_dir() / "images"
+        folder.mkdir(parents=True, exist_ok=True)
+        return folder / f"{digest}.png"
+
     def generate(
         self,
         prompt: str,
@@ -108,17 +131,32 @@ class ImageStudio:
         kind: str = "cover",
         attempts: int = 2,
     ) -> Path:
-        """Generate one image. Falls back to procedural art on any failure."""
+        """Generate one image. Falls back to procedural art on any failure.
+
+        A cache hit costs nothing and is recorded in `cache_hits`.
+        """
         out_path = Path(out_path)
         out_path.parent.mkdir(parents=True, exist_ok=True)
         theme = get_theme(spec.theme if spec else None)
 
         if not self.offline:
+            cached = self._cache_path(prompt, size)
+            if cached and cached.exists() and cached.stat().st_size > 1024:
+                out_path.write_bytes(cached.read_bytes())
+                self.cache_hits += 1
+                return out_path
+
             last_error: Exception | None = None
             for attempt in range(attempts):
                 try:
                     data = self._openai_request(prompt, size)
                     out_path.write_bytes(data)
+                    self.generated += 1
+                    if cached:
+                        try:
+                            cached.write_bytes(data)
+                        except OSError:
+                            pass  # a read-only cache dir must not fail the build
                     return out_path
                 except Exception as exc:  # noqa: BLE001 - any failure -> fallback
                     last_error = exc

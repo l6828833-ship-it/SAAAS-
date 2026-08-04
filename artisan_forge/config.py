@@ -58,6 +58,11 @@ class Settings:
         default_factory=lambda: _clean("AF_IMAGE_MODEL_CHEAP", "gpt-image-1-mini")
     )
 
+    # Generated images are cached by prompt hash, so rebuilding a product with
+    # the same brief costs nothing. Images dominate the cost of a run.
+    image_cache: bool = field(default_factory=lambda: _flag("AF_IMAGE_CACHE", True))
+    cache_dir: Path = field(default_factory=lambda: Path(os.getenv("AF_CACHE_DIR", "cache")))
+
     etsy_keystring: str | None = field(default_factory=lambda: _clean("ETSY_KEYSTRING") or None)
     etsy_shared_secret: str | None = field(
         default_factory=lambda: _clean("ETSY_SHARED_SECRET") or None
@@ -103,6 +108,24 @@ class Settings:
             image_quality="low",
         )
 
+    def tuned(
+        self,
+        image_model: str | None = None,
+        image_quality: str | None = None,
+        cheap_text: bool = False,
+    ) -> "Settings":
+        """A copy with the model tier a cost profile asks for.
+
+        Images dominate the cost of a run, so the caller needs to be able to
+        pin the exact model and quality rather than choosing between two presets.
+        """
+        return replace(
+            self,
+            text_model=(self.cheap_text_model or self.text_model) if cheap_text else self.text_model,
+            image_model=image_model or self.image_model,
+            image_quality=image_quality or self.image_quality,
+        )
+
     @property
     def etsy_configured(self) -> bool:
         """True when the app can start an Etsy OAuth flow."""
@@ -110,6 +133,13 @@ class Settings:
 
     def resolved_output_dir(self) -> Path:
         path = self.output_dir
+        if not path.is_absolute():
+            path = ROOT / path
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def resolved_cache_dir(self) -> Path:
+        path = self.cache_dir
         if not path.is_absolute():
             path = ROOT / path
         path.mkdir(parents=True, exist_ok=True)

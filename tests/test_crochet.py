@@ -12,6 +12,7 @@ from artisan_forge.crochet.extract import corpus_brief, extract_pattern, merge_s
 from artisan_forge.crochet.pdf import CrochetPDF
 from artisan_forge.pdf.verify import extract_page_texts
 from artisan_forge.products.crochet import (
+    DEFAULT_COST_MODE,
     MODES,
     CrochetSpec,
     build_crochet,
@@ -586,7 +587,7 @@ def test_spec_validation_clamps_out_of_range_values():
         mode="from_brief", brief="a cardigan", cost_mode="wild", listing_image_count=99,
         bleed_in=9.0, sizes=[" s ", "m", ""], theme="not-a-theme",
     ))
-    assert spec.cost_mode == "standard"
+    assert spec.cost_mode == DEFAULT_COST_MODE
     assert spec.listing_image_count == 10
     assert spec.bleed_in == 0.25
     assert spec.sizes == ["S", "M"]
@@ -763,9 +764,154 @@ def test_lean_cost_mode_uses_the_cheap_model_tier(tmp_path, offline):
     assert lean.text_model == settings.cheap_text_model
     assert lean.image_model == settings.cheap_image_model
     assert lean.image_quality == "low"
-    # and the spec asks for fewer plates
-    assert validate(CrochetSpec(mode="from_brief", brief="a hat", cost_mode="lean")).plate_limit == 2
-    assert validate(CrochetSpec(mode="from_brief", brief="a hat", cost_mode="max")).plate_limit == 5
+
+
+# --------------------------------------------------------------------- costing
+def test_cost_profiles_are_ordered_cheapest_first():
+    from artisan_forge.products.crochet import COST_PROFILES
+
+    estimates = [profile.estimate() for profile in COST_PROFILES.values()]
+    assert estimates == sorted(estimates), "cost modes should ascend in price"
+    # the default must be one of the cheap ones, not the $1 tier
+    assert COST_PROFILES[DEFAULT_COST_MODE].estimate() < 0.05
+
+
+def test_cost_profile_estimates_track_images_not_text():
+    """Images are ~95% of a run, so the estimate must be image-driven."""
+    from artisan_forge.products.crochet import COST_PROFILES
+
+    premium = COST_PROFILES["premium"]
+    assert premium.image_cost() > premium.text_cost() * 20
+    free = COST_PROFILES["free"]
+    assert free.image_cost() == 0.0
+    assert free.estimate() == free.text_cost()
+
+
+@pytest.mark.parametrize(
+    ("mode", "plates", "ai_art"),
+    [("free", 0, False), ("lean", 1, True), ("standard", 3, True), ("premium", 5, True)],
+)
+def test_cost_mode_controls_how_many_images_are_generated(mode, plates, ai_art):
+    spec = validate(CrochetSpec(mode="from_brief", brief="a cardigan", cost_mode=mode))
+    assert spec.plate_limit == plates
+    assert spec.generate_ai_art is ai_art
+
+
+def test_cost_estimate_scales_with_the_batch_and_is_free_offline():
+    one = validate(CrochetSpec(mode="from_brief", brief="a hat", cost_mode="standard"))
+    four = validate(
+        CrochetSpec(mode="from_brief", brief="a hat", cost_mode="standard", pattern_count=4)
+    )
+    assert four.estimated_cost_usd() == pytest.approx(one.estimated_cost_usd() * 4, rel=0.01)
+
+    # the diagrams-only mode never calls an API
+    free = validate(CrochetSpec(mode="tech_pack", brief="a blanket", cost_mode="premium"))
+    assert free.estimated_cost_usd() == 0.0
+
+
+def test_unknown_cost_mode_falls_back_to_the_cheap_default():
+    spec = validate(CrochetSpec(mode="from_brief", brief="a hat", cost_mode="max"))
+    assert spec.cost_mode == DEFAULT_COST_MODE
+    assert spec.estimated_cost_usd() < 0.05
+
+
+def test_settings_tuned_pins_the_model_the_profile_asks_for():
+    from artisan_forge.config import get_settings
+    from artisan_forge.products.crochet import COST_PROFILES
+
+    base = get_settings()
+    for profile in COST_PROFILES.values():
+        tuned = base.tuned(profile.image_model, profile.image_quality, profile.cheap_text)
+        if profile.image_model:
+            assert tuned.image_model == profile.image_model
+        assert tuned.image_quality == profile.image_quality
+        if profile.cheap_text:
+            assert tuned.text_model == base.cheap_text_model
+
+
+def test_image_cache_avoids_paying_twice_for_the_same_prompt(tmp_path, monkeypatch):
+    """A repeat prompt must not reach the API. Images are the whole cost."""
+    from artisan_forge.ai.image_client import SQUARE, ImageStudio
+    from artisan_forge.config import get_settings
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-used")
+    monkeypatch.setenv("AF_IMAGE_CACHE", "1")
+    monkeypatch.setenv("AF_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.delenv("AF_OFFLINE", raising=False)
+
+    settings = get_settings()
+    assert settings.image_cache
+
+    calls: list[str] = []
+    png = (
+        b"\x89PNG\r\n\x1a\n" + b"\x00" * 4096  # plausible size, never decoded
+    )
+
+    def fake_request(self, prompt, size):
+        calls.append(prompt)
+        return png
+
+    monkeypatch.setattr(ImageStudio, "_openai_request", fake_request)
+
+    studio = ImageStudio(settings, offline=False)
+    first = studio.generate("a flat lay of yarn", tmp_path / "a.png", size=SQUARE)
+    assert first.exists() and len(calls) == 1
+    assert studio.generated == 1 and studio.cache_hits == 0
+
+    # same prompt, new destination -> served from cache, no API call
+    second = studio.generate("a flat lay of yarn", tmp_path / "b.png", size=SQUARE)
+    assert second.exists() and len(calls) == 1
+    assert studio.generated == 1 and studio.cache_hits == 1
+    assert second.read_bytes() == first.read_bytes()
+
+    # a different prompt is billed
+    studio.generate("a close up of stitches", tmp_path / "c.png", size=SQUARE)
+    assert len(calls) == 2 and studio.generated == 2
+
+    # a fresh studio still benefits: the cache is on disk, not in memory
+    reused = ImageStudio(settings, offline=False)
+    reused.generate("a flat lay of yarn", tmp_path / "d.png", size=SQUARE)
+    assert len(calls) == 2
+    assert reused.cache_hits == 1 and reused.generated == 0
+
+
+def test_image_cache_can_be_turned_off(tmp_path, monkeypatch):
+    from artisan_forge.ai.image_client import SQUARE, ImageStudio
+    from artisan_forge.config import get_settings
+
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-test-not-used")
+    monkeypatch.setenv("AF_IMAGE_CACHE", "0")
+    monkeypatch.setenv("AF_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.delenv("AF_OFFLINE", raising=False)
+
+    calls: list[str] = []
+    monkeypatch.setattr(
+        ImageStudio, "_openai_request",
+        lambda self, prompt, size: calls.append(prompt) or (b"\x89PNG\r\n\x1a\n" + b"\x00" * 4096),
+    )
+    studio = ImageStudio(get_settings(), offline=False)
+    studio.generate("same prompt", tmp_path / "a.png", size=SQUARE)
+    studio.generate("same prompt", tmp_path / "b.png", size=SQUARE)
+    assert len(calls) == 2, "cache should be disabled"
+    assert studio.cache_hits == 0
+
+
+def test_build_reports_what_it_billed(tmp_path, offline):
+    source = tmp_path / "src.txt"
+    source.write_text(SOURCE_TEXT, encoding="utf-8")
+    result = build_crochet(
+        CrochetSpec(
+            mode="from_pdfs", source_files=[str(source)], cost_mode="lean",
+            listing_image_count=1,
+        ),
+        out_dir=tmp_path / "run", settings=offline,
+    )
+    manifest = json.loads((result.run_dir / "manifest.json").read_text(encoding="utf-8"))
+    cost = manifest["cost"]
+    assert cost["mode"] == "lean"
+    assert cost["images_billed"] == 0        # offline: procedural art, nothing billed
+    assert cost["images_from_cache"] == 0
+    assert cost["estimated_usd"] >= 0
 
 
 # ---------------------------------------------------------------------- batch

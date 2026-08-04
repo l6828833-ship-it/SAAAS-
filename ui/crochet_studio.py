@@ -16,6 +16,7 @@ from artisan_forge.crochet.brand import BrandKit
 from artisan_forge.models import PAPER_SIZES
 from artisan_forge.products.crochet import (
     COST_MODES,
+    DEFAULT_COST_MODE,
     MAX_PATTERNS_PER_RUN,
     MAX_PHOTOS,
     MAX_SOURCE_FILES,
@@ -497,9 +498,12 @@ def render(user: dict) -> None:
     )
     size_preset = col_b.selectbox("Sizes to grade", list(SIZE_PRESETS), key="crochet_sizes")
     cost_mode = col_c.selectbox(
-        "Cost", list(COST_MODES), index=1, format_func=lambda k: COST_MODES[k],
+        "Cost", list(COST_MODES),
+        index=list(COST_MODES).index(DEFAULT_COST_MODE),
+        format_func=lambda k: COST_MODES[k],
         key="crochet_cost",
         disabled=mode == "tech_pack",
+        help="Images are almost the whole cost of a run. Diagrams are always free.",
     )
 
     market_fragment = _market_inputs(mode)
@@ -573,8 +577,8 @@ def render(user: dict) -> None:
     )
 
     ready, reason = _readiness(spec)
-    per_pattern = 0 if spec.offline_only or not settings.ai_available else (1 + spec.plate_limit)
-    calls = per_pattern * spec.pattern_count
+    profile = spec.profile
+    estimate = spec.estimated_cost_usd() if settings.ai_available else 0.0
     batch_note = (
         f"<b style='color:#ECECF1'>{spec.pattern_count} patterns</b> \u00b7 "
         if spec.pattern_count > 1 else ""
@@ -583,10 +587,27 @@ def render(user: dict) -> None:
         f"<div style='color:#9A9AAE;font-size:.88rem;margin:.4rem 0 .8rem'>"
         f"{batch_note}"
         f"<b style='color:#ECECF1'>{MODES[mode]}</b> \u00b7 {spec.size_label} {spec.orientation} "
-        f"\u00b7 {len(spec.sizes) or 1} size(s) \u00b7 {int(images)} listing images each \u00b7 "
-        f"about <b style='color:#ECECF1'>{calls}</b> API call(s) total</div>",
+        f"\u00b7 {len(spec.sizes) or 1} size(s) \u00b7 {int(images)} listing images each</div>",
         unsafe_allow_html=True,
     )
+
+    if not settings.ai_available:
+        st.caption("No OpenAI key configured, so this run is free (templates + local art).")
+    elif estimate <= 0:
+        st.caption("This run makes no API calls, so it is free.")
+    else:
+        tone = "ok" if estimate < 0.10 else ("info" if estimate < 0.40 else "warn")
+        detail = (
+            f"{profile.plates} AI image(s) per pattern on "
+            f"`{profile.image_model}` at {profile.image_quality} quality"
+            if profile.plates else "no AI images"
+        )
+        theme.note(
+            f"Estimated cost: about ${estimate:.2f} for this run \u2014 {detail}. "
+            "Repeat prompts are served from the image cache for free, and every "
+            "technical diagram is drawn locally at no cost.",
+            tone,
+        )
 
     allowed, quota_reason = auth.can_build(user)
     if not allowed:
