@@ -3,15 +3,14 @@
 Writes the pages of a digital product - crochet pattern sections, prompts,
 checklists, tracker columns - plus its Etsy listing copy.
 
-The default backend is the Inworld Router with `Qwen3-14B` doing the writing: a
-pattern run is roughly six thousand output tokens, so about a sixth of a cent.
-Anything with pictures attached is routed to `Qwen3-VL-30B-A3B-Instruct`
-instead, because Qwen3-14B has no vision - that covers both uploaded reference
-photos and the Gemini plates fed back in to write the pattern against.
+The default backend is the Inworld Router with `Qwen3-VL-30B-A3B-Instruct`
+doing every piece of writing, with or without pictures attached. It is one
+model for one job on purpose: a fallback ladder means every model above the one
+that finally works has already been billed, which is real money spent on
+answers that were thrown away.
 
-Model ids move fast, so the chain is tried in order and the first one that
-answers wins. Override the front of the chain with `AF_TEXT_MODEL`, or switch
-the whole gateway back with `AF_AI_PROVIDER=openai`.
+Override the model with `AF_TEXT_MODEL` / `AF_VISION_MODEL`, or switch the
+whole gateway with `AF_AI_PROVIDER=openai`.
 """
 
 from __future__ import annotations
@@ -33,30 +32,30 @@ CHAT_PATH = "/chat/completions"
 MAX_IMAGES = 6
 MAX_IMAGE_BYTES = 8 * 1024 * 1024
 
-# Fallback ladders per gateway. The first entry of the effective chain is always
-# whatever `AF_TEXT_MODEL` (or the cost profile) asked for.
+# A full pattern is a large JSON document - roughly six thousand output tokens.
+# Left unset, gateways apply their own modest default, the object gets cut off
+# mid-string and the parse fails, which used to look like a model problem and
+# sent the run down the fallback ladder paying for every rung.
+MAX_OUTPUT_TOKENS = 8000
+
+# One model per gateway per role. Inworld is deliberately a single entry: see
+# the module docstring.
 MODEL_CHAINS = {
-    "inworld": [
-        "deepinfra/Qwen/Qwen3-14B",                       # $0.12 / $0.24 per Mtok
-        "deepinfra/Qwen/Qwen3-32B",                       # $0.08 / $0.28
-        "deepinfra/Qwen/Qwen3-235B-A22B-Instruct-2507",   # $0.09 / $0.10
-    ],
+    "inworld": ["deepinfra/Qwen/Qwen3-VL-30B-A3B-Instruct"],  # $0.15 / $0.60 per Mtok
     "openai": ["gpt-5.6-luna", "gpt-5-mini", "gpt-4.1-mini", "gpt-4o-mini"],
 }
-# Only these can read the attached photographs.
+# The model that reads attached photographs. Qwen3-VL does both, so on Inworld
+# this is the same single model.
 VISION_CHAINS = {
-    "inworld": [
-        "deepinfra/Qwen/Qwen3-VL-30B-A3B-Instruct",      # $0.15 / $0.60
-        "google-ai-studio/gemini-2.5-flash",
-    ],
+    "inworld": ["deepinfra/Qwen/Qwen3-VL-30B-A3B-Instruct"],
     "openai": ["gpt-4.1-mini", "gpt-4o-mini"],
 }
 
 # Backwards-compatible alias: this used to be the single OpenAI-only ladder.
 MODEL_CHAIN = MODEL_CHAINS["openai"]
 
-# Reasoning-tuned models like Qwen3-32B narrate before they answer. The JSON is
-# still in there, but the preamble has to come off first.
+# Reasoning-tuned models narrate before they answer. The JSON is still in
+# there, but the preamble has to come off first.
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
 SYSTEM = (
@@ -115,6 +114,16 @@ def _extract_json(text: str) -> dict:
     if start >= 0 and end > start:
         return json.loads(text[start : end + 1])
     raise ValueError("No JSON object found in model response")
+
+
+def _worth_retrying_without_schema(exc: Exception) -> bool:
+    """True when the failure looks like "this model has no JSON mode".
+
+    A 400 or 422 is the gateway refusing the request shape, which a retry with
+    `response_format` dropped can fix. Everything else - a timeout, a 500, an
+    unparseable answer - fails identically the second time and is billed again.
+    """
+    return isinstance(exc, GatewayError) and exc.status in (400, 404, 415, 422)
 
 
 def _message_text(body: dict) -> str:
@@ -193,7 +202,11 @@ class CopyStudio:
         last_error: Exception | None = None
         for model in model_chain(self.settings, vision=bool(attached)):
             for use_schema in (True, False):
-                payload: dict[str, Any] = {"model": model, "messages": messages}
+                payload: dict[str, Any] = {
+                    "model": model,
+                    "messages": messages,
+                    "max_tokens": MAX_OUTPUT_TOKENS,
+                }
                 if use_schema:
                     payload["response_format"] = {"type": "json_object"}
                 if temperature is not None:
@@ -215,6 +228,12 @@ class CopyStudio:
                         )
                         self.source = "template"
                         return None
+                    # The no-schema retry exists for one reason: a gateway that
+                    # rejects `response_format` outright. Anything else - a bad
+                    # answer, a timeout, a server error - would fail the same way
+                    # twice, and the first attempt has already been billed.
+                    if not _worth_retrying_without_schema(exc):
+                        break
         self.warnings.append(
             f"{self.settings.provider_label} content unavailable "
             f"({type(last_error).__name__}: {last_error}); used built-in templates"

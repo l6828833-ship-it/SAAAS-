@@ -72,6 +72,14 @@ DESIGN_DIRECTIONS: tuple[str, ...] = (
     "companion piece to the main design.",
 )
 
+# One-word tags for the directions above, in the same order, used to keep the
+# titles in a batch apart. The first is empty on purpose: pattern one is the
+# faithful rebuild, so it keeps the name the source material had.
+DIRECTION_LABELS: tuple[str, ...] = (
+    "", "Oversized", "Cropped", "Textured", "Colourwork", "Airy",
+    "Chunky", "Easy", "Tailored", "Seamless", "Curve", "Companion",
+)
+
 
 @dataclass
 class SourceScore:
@@ -273,6 +281,19 @@ def direction_for(index: int, total: int) -> str:
     if total <= 1:
         return DESIGN_DIRECTIONS[0]
     return DESIGN_DIRECTIONS[(index - 1) % len(DESIGN_DIRECTIONS)]
+
+
+def label_for(index: int, total: int) -> str:
+    """A one-word tag for pattern `index` (1-based), or "" for a single build.
+
+    This is the safety net for the titles: five patterns from one upload are
+    five different designs, but a writer working from the same source will
+    happily name them all the same thing, and five products called "Cozy Ribbed
+    Cardigan" look like a bug even when the contents differ.
+    """
+    if total <= 1:
+        return ""
+    return DIRECTION_LABELS[(index - 1) % len(DIRECTION_LABELS)]
 
 
 def fallback_plan(

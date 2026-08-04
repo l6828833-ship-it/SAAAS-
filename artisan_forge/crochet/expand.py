@@ -128,9 +128,27 @@ def content_prompt(
         "SOURCE MATERIAL AND CONTEXT\n"
         f"{brief}\n\n"
         "REQUIREMENTS\n"
-        "- Every row instruction must end with its stitch count in brackets.\n"
+        "- Every row or round instruction must end with its stitch count in "
+        "brackets. Steps that are not rows - finishing, blocking, assembly, "
+        "weaving in ends - must have an empty count, because there is nothing "
+        "to count.\n"
         "- Instructions must be internally consistent: counts follow from the "
         "increases and decreases you write.\n"
+        "- Never write the same instruction out twice. If rows repeat, collapse "
+        "them into one step labelled for the range, e.g. \"Rows 3-18\": repeat "
+        "Row 2. Eighteen near-identical rows printed one after another reads as "
+        "padding and is the single fastest way to get a refund request.\n"
+        "- Only use stitches the fabric actually contains. If the piece is "
+        "single crochet and chain spaces, do not mention treble crochet.\n"
+        "- Seaming and assembly must match the construction. A piece worked in "
+        "one flat rectangle has no side seams - if there is nothing to join, "
+        "say so and cover finishing and edging instead.\n"
+        "- Materials must list everything the maker has to have on the table: "
+        "yarn, hook size, and the notions actually used - tapestry needle, "
+        "stitch markers, scissors, tape measure, blocking pins or wires, and "
+        "any buttons or closures the design needs.\n"
+        "- Stay on the item named above. Do not quietly change what the garment "
+        "is; a top must not become a shawl.\n"
         "- Grade every size in the sizing table and the yardage table.\n"
         "- Use standard US crochet terminology and abbreviations.\n"
         "- Write real, specific content. No placeholders, no 'TBD', no emoji.\n"
@@ -1213,12 +1231,100 @@ def _normalise_blocking(raw: object, fallback: dict) -> dict:
     return out
 
 
+# ------------------------------------------------------------------- tidying up
+# A step that is a row or a round has a count. "Finishing", "Weave in ends" and
+# "Step 3" of a blocking routine do not, and a count stamped on one of those is
+# nonsense on the page.
+ROW_LABEL_RE = re.compile(r"^\s*(rows?|rnds?|rounds?)\b", re.IGNORECASE)
+# Sections whose steps are procedure, not fabric.
+NON_ROW_SECTION_RE = re.compile(
+    r"\b(blocking|assembly|assembling|seaming|finishing|joining|care|washing|"
+    r"weav\w*|edging notes|before you start|notes)\b",
+    re.IGNORECASE,
+)
+
+
+def _is_row_step(section_title: str, step: dict) -> bool:
+    """Whether this step describes a row of fabric that has a stitch count."""
+    if ROW_LABEL_RE.match(str(step.get("label") or "")):
+        return True
+    if NON_ROW_SECTION_RE.search(section_title or ""):
+        return False
+    # No label at all and a prose section title: treat it as procedure. Counts
+    # belong to numbered rows, and a model that puts one everywhere is guessing.
+    return bool(str(step.get("label") or "").strip())
+
+
+def _step_signature(text: str) -> str:
+    """Normalised step text, for spotting the same instruction written twice."""
+    stripped = re.sub(r"\(.*?\)", " ", str(text or "").lower())
+    stripped = re.sub(r"\b\d+\b", "#", stripped)
+    return re.sub(r"[^a-z#]+", " ", stripped).strip()
+
+
+def _range_label(first: str, last: str) -> str:
+    """Turn ("Row 3", "Row 18") into "Rows 3-18"."""
+    head = re.match(r"^\s*(rows?|rnds?|rounds?)\s*([0-9]+)", first or "", re.IGNORECASE)
+    tail = re.search(r"([0-9]+)\s*$", last or "")
+    if not head or not tail:
+        return first
+    word = head.group(1).lower()
+    plural = {"row": "Rows", "rows": "Rows", "rnd": "Rnds", "rnds": "Rnds",
+              "round": "Rounds", "rounds": "Rounds"}.get(word, word.title())
+    return f"{plural} {head.group(2)}-{tail.group(1)}"
+
+
+def tidy_steps(pattern: dict) -> dict:
+    """Strip the two ways a generated pattern reads as machine output.
+
+    1. A stitch count stamped on steps that have nothing to count - the six
+       steps of a blocking routine all ending "(71 hdc)".
+    2. The same row written out eighteen times in a row. Consecutive steps with
+       the same instruction collapse into one range, which is how a human
+       designer writes it anyway.
+
+    Mutates and returns `pattern`.
+    """
+    for section in pattern.get("sections") or []:
+        title = section.get("title") or ""
+        steps = section.get("steps") or []
+        for step in steps:
+            if step.get("count") and not _is_row_step(title, step):
+                step["count"] = ""
+
+        collapsed: list[dict] = []
+        for step in steps:
+            previous = collapsed[-1] if collapsed else None
+            same = (
+                previous is not None
+                and _step_signature(previous["text"]) == _step_signature(step.get("text"))
+                and _step_signature(step.get("text"))
+                and ROW_LABEL_RE.match(str(previous.get("label") or ""))
+                and ROW_LABEL_RE.match(str(step.get("label") or ""))
+            )
+            if same:
+                previous["label"] = _range_label(
+                    previous.get("_first_label") or previous.get("label", ""),
+                    step.get("label", ""),
+                )
+                previous["count"] = previous.get("count") or step.get("count", "")
+                continue
+            entry = dict(step)
+            entry["_first_label"] = entry.get("label", "")
+            collapsed.append(entry)
+        for entry in collapsed:
+            entry.pop("_first_label", None)
+        section["steps"] = collapsed
+    return pattern
+
+
 # ------------------------------------------------------------------ derived data
 def ensure_stitch_counts(pattern: dict) -> dict:
     """Guarantee a stitch count table.
 
     If the model wrote counts on the steps but no summary table, build the table
-    from the steps rather than dropping the page.
+    from the steps rather than dropping the page. Only rows and rounds are
+    listed: a blocking step has no stitch count, whatever the model claimed.
     """
     if pattern.get("stitch_counts"):
         return pattern

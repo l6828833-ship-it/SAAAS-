@@ -709,6 +709,11 @@ def render(user: dict) -> None:
         if results:
             for result in results:
                 remember(user, result)
+            # Every pattern in the batch is shown, not just the last one. This is
+            # the whole batch as posts; asking for five patterns and seeing one
+            # result looked like four of them had silently failed.
+            st.session_state["crochet_batch"] = [str(r.run_dir) for r in results]
+            st.session_state.pop("crochet_open", None)
             if len(results) == 1:
                 manifest = load_manifest(results[0].run_dir) or {}
                 st.success(
@@ -718,29 +723,104 @@ def render(user: dict) -> None:
                     f"{manifest.get('duration_seconds', 0):.1f}s."
                 )
             else:
-                st.success(f"Built {len(results)} separate patterns.")
-                for index, result in enumerate(results, start=1):
-                    manifest = load_manifest(result.run_dir) or {}
-                    st.markdown(
-                        f"**{index}. {manifest.get('title', 'Pattern')}** \u2014 "
-                        f"{manifest.get('pages', 0)} pages, "
-                        f"{manifest.get('steps', 0)} steps, "
-                        f"{len(manifest.get('files', {}).get('listing_images') or [])} images"
-                    )
-                st.caption(
-                    "All of them are in your Library. The most recent one is shown below."
+                st.success(
+                    f"Built {len(results)} separate patterns \u2014 all of them are "
+                    "below and in your Library."
                 )
     if not ready:
         st.caption(reason)
 
-    run_dir = st.session_state.get("last_run")
-    if run_dir:
+    _results_feed()
+
+
+def _batch_run_dirs() -> list[str]:
+    """Which run folders to show: this session's batch, else the last build."""
+    batch = [d for d in st.session_state.get("crochet_batch") or [] if Path(d).exists()]
+    if batch:
+        return batch
+    last = st.session_state.get("last_run")
+    return [str(last)] if last and Path(str(last)).exists() else []
+
+
+def _results_feed() -> None:
+    """The patterns from this session, as post cards, or one opened in full."""
+    run_dirs = _batch_run_dirs()
+    if not run_dirs:
+        return
+
+    opened = st.session_state.get("crochet_open")
+    if opened and opened in run_dirs:
+        manifest = load_manifest(opened)
+        st.divider()
+        if len(run_dirs) > 1 and st.button("\u2190 Back to all patterns"):
+            st.session_state.pop("crochet_open", None)
+            st.rerun()
+        if manifest:
+            theme.section(manifest.get("title", ""), manifest.get("mode_label", ""))
+            _extras(manifest)
+            show(manifest, Path(opened))
+        return
+
+    posts = []
+    for run_dir in run_dirs:
         manifest = load_manifest(run_dir)
         if manifest and manifest.get("product_type") == "crochet":
-            st.divider()
-            theme.section("Latest pattern", manifest.get("title", ""))
-            _extras(manifest)
-            show(manifest, run_dir)
+            posts.append((run_dir, manifest))
+    if not posts:
+        return
+
+    st.divider()
+    if len(posts) == 1:
+        run_dir, manifest = posts[0]
+        theme.section("Latest pattern", manifest.get("title", ""))
+        _extras(manifest)
+        show(manifest, Path(run_dir))
+        return
+
+    theme.section(f"Your {len(posts)} new patterns", "Download straight from a card, or open one for the full report")
+    for row_start in range(0, len(posts), 3):
+        row = posts[row_start : row_start + 3]
+        for column, (run_dir, manifest) in zip(st.columns(3), row):
+            with column:
+                _result_post(run_dir, manifest, key=f"r{row_start}_{run_dir[-12:]}")
+        st.write("")
+
+
+def _result_post(run_dir: str, manifest: dict, key: str) -> None:
+    """One pattern as a card: preview, numbers, downloads, open.
+
+    Reuses the Library's download slot so a card behaves the same in both
+    places - the ZIP and the PDF come off the card without opening anything.
+    """
+    from .library import _download_slot  # local import: avoids a cycle at import time
+
+    files = manifest.get("files") or {}
+    images = files.get("listing_images") or []
+    preview = next((p for p in images if Path(p).exists()), None)
+    variant = manifest.get("variant") or {}
+
+    with st.container(border=True):
+        if preview:
+            st.image(str(preview), use_container_width=True)
+        else:
+            theme.thumb_placeholder("No listing image")
+
+        meta_bits = [f"{manifest.get('pages', 0)} pages",
+                     f"{manifest.get('steps', 0)} steps",
+                     f"{len(images)} images"]
+        if variant.get("total", 1) > 1:
+            meta_bits.append(f"{variant['index']} of {variant['total']}")
+        theme.post_head(
+            manifest.get("title", "Pattern"),
+            "  \u00b7  ".join(meta_bits),
+            str(variant.get("direction") or manifest.get("brief") or "")[:150],
+        )
+
+        build = {"zip_path": files.get("zip")}
+        _download_slot(build, manifest, Path(run_dir), key)
+        if st.button("Open pattern", key=f"open_{key}", use_container_width=True):
+            st.session_state["crochet_open"] = run_dir
+            st.rerun()
 
 
 def _readiness(spec: CrochetSpec) -> tuple[bool, str]:

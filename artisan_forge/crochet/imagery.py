@@ -141,7 +141,13 @@ def art_direction_request(
         f"{brief}\n\n"
         "First decide the design: the silhouette, the stitch pattern, the yarn "
         "weight and fibre, and one colourway. Be specific and commit to it - "
-        "every photograph must show the same object.\n\n"
+        "every photograph must show the same object.\n"
+        + (
+            f"The item is a {garment}. Design a {garment} - do not substitute a "
+            "different garment, however well it would photograph.\n"
+            if garment else ""
+        )
+        + "\n"
         f"Then write image generation prompts for these {len(wanted)} plates:\n"
         f"{shot_list}\n\n"
         "Each prompt is one paragraph, names the yarn colour and fibre, and is "

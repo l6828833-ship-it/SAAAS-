@@ -31,20 +31,20 @@ BASE_URLS = {
 
 # Inworld Router model ids are "provider/model". Prices are per million tokens.
 #
-#   deepinfra/Qwen/Qwen3-14B                      $0.12 in / $0.24 out
-#   deepinfra/Qwen/Qwen3-32B                      $0.08 in / $0.28 out
 #   deepinfra/Qwen/Qwen3-VL-30B-A3B-Instruct      $0.15 in / $0.60 out
 #   google-ai-studio/gemini-2.5-flash-image       $0.30 in / $2.50 out
 #
-# Qwen3-14B writes the patterns and the listing copy. A pattern run is roughly
-# 1.5k input and 6k output tokens, so about $0.0016 each - text cost is noise
-# next to the artwork. Qwen3-14B has no vision, so anything with pictures
-# attached (uploaded photos, or the Gemini plates fed back in) is routed to the
-# VL model instead; the text client switches automatically.
+# Exactly two models, one job each: Qwen3-VL does every piece of writing and
+# every piece of reading, Gemini draws. Qwen3-VL is used for the text-only
+# stages as well as the ones with photographs attached, on purpose - a second
+# text-only model would be marginally cheaper per token but it cannot see, so
+# it has to be swapped out mid-pipeline, and every model that gets tried and
+# fails is billed anyway. One model that handles both is cheaper in practice
+# than a ladder of cheaper ones.
 MODEL_DEFAULTS = {
     "inworld": {
-        "text": "deepinfra/Qwen/Qwen3-14B",
-        "cheap_text": "deepinfra/Qwen/Qwen3-14B",
+        "text": "deepinfra/Qwen/Qwen3-VL-30B-A3B-Instruct",
+        "cheap_text": "deepinfra/Qwen/Qwen3-VL-30B-A3B-Instruct",
         "vision": "deepinfra/Qwen/Qwen3-VL-30B-A3B-Instruct",
         "image": "google-ai-studio/gemini-2.5-flash-image",
         "cheap_image": "google-ai-studio/gemini-2.5-flash-image",
