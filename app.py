@@ -15,6 +15,7 @@ from ui import (
     auth_view,
     bundle_studio,
     calendar_studio,
+    canva_panel,
     crochet_studio,
     dashboard,
     etsy_panel,
@@ -38,6 +39,8 @@ if not user:
 
 # Etsy sends the OAuth code back to this same URL.
 etsy_panel.handle_callback(user)
+# Canva also redirects here after authorization.
+canva_panel.handle_callback()
 
 WORKSPACE = [
     ("Dashboard", "\U0001f3e0"),

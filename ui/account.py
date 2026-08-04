@@ -10,7 +10,7 @@ from artisan_forge.ai.text_client import model_chain
 from artisan_forge.config import get_settings
 from artisan_forge.saas import auth, db
 
-from . import etsy_panel, theme
+from . import canva_panel, etsy_panel, theme
 
 
 def render(user: dict) -> None:
@@ -61,6 +61,9 @@ def render(user: dict) -> None:
         )
 
     etsy_panel.connect_panel(user)
+
+    theme.section("Canva Connect", "push artwork as editable designs")
+    canva_panel.render_connect_button()
 
     theme.section("Change password")
     with st.form("password_form"):
