@@ -37,14 +37,14 @@ def render(user: dict) -> None:
 
     if settings.ai_available:
         theme.note(
-            f"ChatGPT content is on. Model chain: {', '.join(model_chain(settings)[:3])} "
-            "(first that answers wins).",
+            f"{settings.provider_label} content is on. Model chain: "
+            f"{', '.join(model_chain(settings)[:3])} (first that answers wins).",
             "ok",
         )
     else:
         theme.note(
-            "No OPENAI_API_KEY configured - content comes from built-in templates and artwork is "
-            "painted locally. Add a key to have ChatGPT write the pages.",
+            f"No {settings.key_env_var} configured - content comes from built-in templates and "
+            "artwork is painted locally. Add a key to have the model write the pages.",
             "info",
         )
 

@@ -534,7 +534,13 @@ def test_default_briefs_lead_with_the_cover():
     assert "space" in briefs[0]["prompt"].lower()   # room for the title block
 
 
-def test_lean_run_puts_exactly_one_photo_in_the_pdf(tmp_path, offline):
+def test_lean_run_buys_the_cover_and_the_three_interior_photos(tmp_path, offline):
+    """The lean budget is the PDF's own shot list: cover plus three interiors.
+
+    Gemini plates cost well under a cent, so the cheapest paid tier is no longer
+    rationed down to a single image - but it must still stop at what the document
+    can actually place, rather than paying for gallery extras.
+    """
     source = tmp_path / "src.txt"
     source.write_text(SOURCE_TEXT, encoding="utf-8")
     result = build_crochet(
@@ -545,7 +551,10 @@ def test_lean_run_puts_exactly_one_photo_in_the_pdf(tmp_path, offline):
         out_dir=tmp_path / "run", settings=offline,
     )
     manifest = json.loads((result.run_dir / "manifest.json").read_text(encoding="utf-8"))
-    assert list(manifest["files"]["art"]) == ["cover"]
+    from artisan_forge.crochet.imagery import PDF_PLATE_SLOTS
+
+    assert sorted(manifest["files"]["art"]) == sorted(PDF_PLATE_SLOTS)
+    assert "cover" in manifest["files"]["art"]
     # the technical diagrams are free and stay
     assert len(manifest["files"]["diagrams"]) >= 6
     assert manifest["verification"]["ok"]
@@ -941,19 +950,35 @@ def test_cost_profiles_are_ordered_cheapest_first():
 
 
 def test_cost_profile_estimates_track_images_not_text():
-    """Images are ~95% of a run, so the estimate must be image-driven."""
+    """Artwork still dominates a run, and the plate count still drives the price.
+
+    The margin narrowed a lot when the engine moved to Gemini: a plate went from
+    ~$0.133 to ~$0.004, so images are now a few times the text cost rather than
+    twenty. What must stay true is the ordering - more plates costs more, and a
+    run with no plates costs only its text.
+    """
     from artisan_forge.products.crochet import COST_PROFILES
 
-    premium = COST_PROFILES["premium"]
-    assert premium.image_cost() > premium.text_cost() * 20
+    premium, standard, lean = (
+        COST_PROFILES["premium"], COST_PROFILES["standard"], COST_PROFILES["lean"]
+    )
+    assert premium.image_cost() > premium.text_cost()
+    assert premium.image_cost() > standard.image_cost() > lean.image_cost()
     free = COST_PROFILES["free"]
     assert free.image_cost() == 0.0
     assert free.estimate() == free.text_cost()
 
 
+def test_a_full_photoshoot_stays_cheap():
+    """Twelve Gemini plates must cost less than one old gpt-image-1.5 cover."""
+    from artisan_forge.products.crochet import COST_PROFILES
+
+    assert COST_PROFILES["premium"].estimate() < 0.133
+
+
 @pytest.mark.parametrize(
     ("mode", "plates", "ai_art"),
-    [("free", 0, False), ("lean", 1, True), ("standard", 3, True), ("premium", 5, True)],
+    [("free", 0, False), ("lean", 4, True), ("standard", 8, True), ("premium", 12, True)],
 )
 def test_cost_mode_controls_how_many_images_are_generated(mode, plates, ai_art):
     spec = validate(CrochetSpec(mode="from_brief", brief="a cardigan", cost_mode=mode))
@@ -1015,7 +1040,7 @@ def test_image_cache_avoids_paying_twice_for_the_same_prompt(tmp_path, monkeypat
         calls.append(prompt)
         return png
 
-    monkeypatch.setattr(ImageStudio, "_openai_request", fake_request)
+    monkeypatch.setattr(ImageStudio, "_render_request", fake_request)
 
     studio = ImageStudio(settings, offline=False)
     first = studio.generate("a flat lay of yarn", tmp_path / "a.png", size=SQUARE)
@@ -1050,7 +1075,7 @@ def test_image_cache_can_be_turned_off(tmp_path, monkeypatch):
 
     calls: list[str] = []
     monkeypatch.setattr(
-        ImageStudio, "_openai_request",
+        ImageStudio, "_render_request",
         lambda self, prompt, size: calls.append(prompt) or (b"\x89PNG\r\n\x1a\n" + b"\x00" * 4096),
     )
     studio = ImageStudio(get_settings(), offline=False)

@@ -70,14 +70,49 @@ def content_prompt(
     tone: str = "clear, warm, precise",
     designer: str = "",
     extra_instructions: str = "",
+    variation: str = "",
+    design: str = "",
+    has_reference_images: bool = False,
+    batch_position: tuple[int, int] | None = None,
 ) -> str:
     """Build the expansion request.
 
     `brief` is whatever context we have: the merged corpus from uploaded PDFs,
     an Etsy listing dump, or a written brief. The schema is spelled out in full
     because a partially-filled pattern makes for a poor product.
+
+    `variation` is what stops a batch collapsing into one design repeated: it is
+    the design direction this particular pattern has been assigned, and it takes
+    precedence over the source material wherever the two disagree. `design` is
+    the concrete design already committed to during art direction, and
+    `has_reference_images` says that the rendered plates are attached - in which
+    case the pattern must describe the item in those photographs, because they
+    are what the buyer will see on the listing.
     """
     size_list = ", ".join(sizes or DEFAULT_SIZES)
+    position = ""
+    if batch_position and batch_position[1] > 1:
+        index, total = batch_position
+        position = (
+            f"\nThis is pattern {index} of {total} being written for the same shop "
+            "from the same source material. It must stand alone as its own product "
+            "and must not read like a restyle of the others.\n"
+        )
+    direction_block = (
+        f"\nDESIGN DIRECTION FOR THIS PATTERN (this takes priority over the "
+        f"source material wherever they disagree)\n{variation}\n"
+        if variation else ""
+    )
+    design_block = f"\n{design}\n" if design else ""
+    reference_block = (
+        "\nREFERENCE PHOTOGRAPHS\n"
+        "The attached photographs are the finished product shots for this exact "
+        "pattern - they are already rendered and will be the listing images. "
+        "Read them and write the pattern that reproduces what they show: the "
+        "silhouette, the stitch texture, the yarn weight and the colour. The "
+        "instructions and the photographs must describe the same object.\n"
+        if has_reference_images else ""
+    )
     return (
         "You are writing a complete, professional, publication-ready crochet "
         "pattern that a paying customer could follow start to finish.\n\n"
@@ -85,7 +120,11 @@ def content_prompt(
         f"SIZES TO GRADE: {size_list}\n"
         f"AUDIENCE: {audience or 'confident hobby crocheters'}\n"
         f"TONE: {tone}\n"
-        f"DESIGNER CREDIT: {designer or 'the shop owner'}\n\n"
+        f"DESIGNER CREDIT: {designer or 'the shop owner'}\n"
+        f"{position}"
+        f"{design_block}"
+        f"{direction_block}"
+        f"{reference_block}\n"
         "SOURCE MATERIAL AND CONTEXT\n"
         f"{brief}\n\n"
         "REQUIREMENTS\n"
@@ -742,6 +781,84 @@ def default_image_briefs(garment: str, weight: str, fibres: list[str]) -> list[d
                 f"Extreme close-up macro photograph of {weight} weight {fibre} crochet fabric, "
                 "showing individual stitches and the ridged texture in sharp detail, soft raking "
                 "daylight, neutral tones, shallow depth of field, no text."
+            ),
+        },
+        # Everything below is Etsy gallery material rather than PDF pages. A
+        # plate costs well under a cent now, so a listing can carry a full set
+        # of distinct shots instead of repeating the cover.
+        {
+            "key": "styled",
+            "caption": f"The {garment} in a styled setting",
+            "prompt": (
+                f"Lifestyle photograph of a hand-crocheted {garment} in soft neutral {fibre} "
+                "yarn, draped over a pale wooden chair beside a window, warm morning daylight, "
+                "calm scandinavian interior, shallow depth of field, no text, no people."
+            ),
+        },
+        {
+            "key": "detail",
+            "caption": "Edging and finishing detail",
+            "prompt": (
+                f"Close-up photograph of the finished edging on a hand-crocheted {garment} in "
+                f"{weight} weight {fibre} yarn, showing the border stitches and a neatly woven "
+                "end, soft diffused daylight, neutral tones, sharp focus, no text."
+            ),
+        },
+        {
+            "key": "worn",
+            "caption": "How it drapes",
+            "prompt": (
+                f"Photograph of a hand-crocheted {garment} in soft neutral {fibre} yarn being "
+                "worn, three-quarter view from the shoulders down, showing how the fabric falls "
+                "and drapes, soft natural daylight, plain pale background, face not visible, "
+                "no text, no logos."
+            ),
+        },
+        {
+            "key": "flat",
+            "caption": "Laid flat, front view",
+            "prompt": (
+                f"Straight-down photograph of a hand-crocheted {garment} in {weight} weight "
+                f"{fibre} yarn laid perfectly flat and symmetrical on a pale linen surface, even "
+                "soft daylight, whole item in frame with a clean margin, no text, no props."
+            ),
+        },
+        {
+            "key": "progress",
+            "caption": "Work in progress",
+            "prompt": (
+                f"Photograph of a part-finished {garment} still on the crochet hook, a ball of "
+                f"{weight} weight {fibre} yarn resting beside it on a pale linen surface, soft "
+                "window light, shallow depth of field, calm editorial styling, no text, no hands."
+            ),
+        },
+        {
+            "key": "palette",
+            "caption": "Alternative colourways",
+            "prompt": (
+                f"Overhead photograph of three balls of {weight} weight {fibre} yarn in three "
+                "different soft colourways - warm cream, dusty sage and clay - arranged in a row "
+                "on a pale linen surface, even diffused daylight, neutral calm styling, no text."
+            ),
+        },
+        {
+            "key": "scene",
+            "caption": "In the room",
+            "prompt": (
+                f"Wide interior photograph of a calm, light-filled room with a hand-crocheted "
+                f"{garment} in soft neutral {fibre} yarn as the clear subject, folded on a bench "
+                "in the foreground, soft natural daylight, muted neutral palette, plenty of "
+                "negative space, no text, no people."
+            ),
+        },
+        {
+            "key": "gift",
+            "caption": "Ready to give",
+            "prompt": (
+                f"Photograph of a hand-crocheted {garment} in soft neutral {fibre} yarn folded "
+                "and tied with a length of natural twine on a pale linen surface, a sprig of "
+                "dried eucalyptus beside it, soft diffused daylight, calm styling, no text, "
+                "no printed labels."
             ),
         },
     ]

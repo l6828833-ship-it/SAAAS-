@@ -118,7 +118,8 @@ def render(user: dict) -> None:
 
     if not settings.ai_available:
         theme.note(
-            "No OPENAI_API_KEY configured - artwork will be painted locally (procedural mode).",
+            f"No {settings.key_env_var} configured - artwork will be painted locally "
+            "(procedural mode).",
             "info",
         )
 

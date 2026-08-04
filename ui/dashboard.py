@@ -6,6 +6,7 @@ import streamlit as st
 
 from artisan_forge import products
 from artisan_forge.config import get_settings
+from artisan_forge.products.crochet import short_model
 from artisan_forge.saas import db
 
 from . import theme
@@ -47,8 +48,9 @@ def render(user: dict) -> None:
             ("Listing images", stats["images"], "2000 x 2000 px"),
             (
                 "AI engine",
-                "connected" if settings.ai_available else "offline",
-                settings.image_model if settings.ai_available else "procedural art + templates",
+                settings.provider_label if settings.ai_available else "offline",
+                short_model(settings.image_model) if settings.ai_available
+                else "procedural art + templates",
             ),
         ]
     )

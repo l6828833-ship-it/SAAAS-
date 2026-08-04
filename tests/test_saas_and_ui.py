@@ -279,11 +279,23 @@ def test_library_renders_a_build_with_the_etsy_publish_tab(app_test, tmp_path):
 
     db.record_build(user_id, "calendar", "2026 Demo Calendar", run_dir, pages=14, images=1)
 
+    # The library is a feed of product posts: the card carries the title and the
+    # download buttons, so a build is reachable without opening anything.
     app.session_state["nav"] = "Library"
     app.run()
     assert not app.exception
     body = " ".join(md.value for md in app.markdown)
     assert "2026 Demo Calendar" in body
-    # Etsy tab explains what is missing instead of blowing up
-    notes = body + " ".join(info.value for info in app.info)
+    labels = [button.label for button in app.button]
+    assert any("Open post" in label for label in labels)
+    # This build has no ZIP, so the card must say so rather than crash
+    assert any("ZIP" in label for label in labels)
+
+    # Opening the post swaps the feed for the full report, including the Etsy tab.
+    app.session_state["library_open"] = str(run_dir)
+    app.run()
+    assert not app.exception
+    detail = " ".join(md.value for md in app.markdown)
+    notes = detail + " ".join(info.value for info in app.info)
     assert "Etsy" in notes or "Connect" in notes
+    assert any("Back to all products" in button.label for button in app.button)

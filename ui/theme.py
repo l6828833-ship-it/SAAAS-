@@ -194,6 +194,28 @@ div[data-testid="stExpander"] {{
 button[data-baseweb="tab"] {{ font-weight:600; }}
 div[data-testid="stImage"] img {{ border-radius:12px; border:1px solid var(--af-border); }}
 hr {{ border-color:var(--af-border) !important; }}
+
+/* ---------------- product posts (library feed) ---------------- */
+.af-post-title {{
+  font-size:.95rem; font-weight:650; color:var(--af-ink);
+  margin:.5rem 0 .15rem; line-height:1.32;
+  display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+}}
+.af-post-meta {{ font-size:.74rem; color:var(--af-muted); margin:0; }}
+.af-post-brief {{
+  font-size:.78rem; color:#8A8A9E; margin:.3rem 0 .1rem; line-height:1.4;
+  display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden;
+}}
+.af-thumb-empty {{
+  height:150px; border-radius:12px; border:1px dashed var(--af-border);
+  display:flex; align-items:center; justify-content:center;
+  color:#5A5A70; font-size:.78rem; background:rgba(255,255,255,.02);
+}}
+.af-gone {{
+  height:150px; border-radius:12px; border:1px dashed rgba(251,191,36,.35);
+  display:flex; align-items:center; justify-content:center; text-align:center;
+  color:#FCD34D; font-size:.76rem; padding:.5rem; background:rgba(251,191,36,.06);
+}}
 </style>
 """
 
@@ -313,3 +335,23 @@ def user_chip(name: str, meta: str) -> None:
 
 def nav_label(text: str) -> None:
     st.sidebar.markdown(f'<div class="af-navlabel">{esc(text)}</div>', unsafe_allow_html=True)
+
+
+def post_head(title: str, meta: str = "", brief: str = "") -> None:
+    """The text block of a product post: title, one meta line, optional brief."""
+    st.markdown(
+        f'<div class="af-post-title">{esc(title)}</div>'
+        + (f'<p class="af-post-meta">{esc(meta)}</p>' if meta else "")
+        + (f'<p class="af-post-brief">{esc(brief)}</p>' if brief else ""),
+        unsafe_allow_html=True,
+    )
+
+
+def thumb_placeholder(label: str = "No preview image") -> None:
+    """Stand-in tile so a post with no mockup keeps the grid aligned."""
+    st.markdown(f'<div class="af-thumb-empty">{esc(label)}</div>', unsafe_allow_html=True)
+
+
+def thumb_missing(label: str = "Files no longer on disk") -> None:
+    """Stand-in tile for a build whose run folder has been wiped."""
+    st.markdown(f'<div class="af-gone">{esc(label)}</div>', unsafe_allow_html=True)

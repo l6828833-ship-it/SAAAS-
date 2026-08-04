@@ -30,6 +30,11 @@ def mix(a: RGB, b: RGB, t: float) -> RGB:
     return tuple(round(x + (y - x) * t) for x, y in zip(a, b))  # type: ignore[return-value]
 
 
+# The longest edge actually painted before upscaling. See
+# `generate_procedural_art` for why this is safe.
+PAINT_LONG_EDGE = 768
+
+
 # ------------------------------------------------------------------ primitives
 def _gradient(size: tuple[int, int], top: RGB, bottom: RGB) -> Image.Image:
     w, h = size
@@ -252,24 +257,43 @@ def generate_procedural_art(
     seed: int = 0,
     kind: str = "cover",
 ) -> Path:
-    """Paint one theme-matched artwork and save it as PNG."""
+    """Paint one theme-matched artwork and save it as PNG.
+
+    The painting happens at a reduced resolution and is upscaled at the end.
+    Cost scales with pixel count, and this art is entirely soft gradients,
+    blurred washes and feathered motifs - there is no fine detail to lose, so the
+    result is visually indistinguishable while being several times faster. That
+    matters because this is the no-key path: a full photoshoot means painting
+    twelve plates, and at full resolution each one took about eight seconds.
+    """
     out_path = Path(out_path)
     out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    target = (max(2, int(size[0])), max(2, int(size[1])))
+    scale = min(1.0, PAINT_LONG_EDGE / max(target))
+    work = (
+        (max(2, round(target[0] * scale)), max(2, round(target[1] * scale)))
+        if scale < 1.0 else target
+    )
 
     rng = random.Random(seed)
     palette = [hex_to_rgb(c) for c in theme.art_palette]
     light, dark = palette[0], palette[min(1, len(palette) - 1)]
 
-    base = _gradient(size, mix(light, (255, 255, 255), 0.35), mix(dark, light, 0.45))
+    base = _gradient(work, mix(light, (255, 255, 255), 0.35), mix(dark, light, 0.45))
     density = 1.0 if kind == "cover" else 0.62
     base = _washes(base, rng, palette[1:], count=int(rng.randint(4, 7) * density) + 2)
 
     motif_fn = _MOTIFS.get(theme.motif)
     if motif_fn is not None:
-        base = Image.alpha_composite(base, motif_fn(size, rng, palette, density))
+        base = Image.alpha_composite(base, motif_fn(work, rng, palette, density))
 
     image = base.convert("RGB")
     image = _grain(image, 0.16 if kind == "cover" else 0.12)
     image = _vignette(image, 0.14)
-    image.save(out_path, format="PNG", optimize=True)
+    if image.size != target:
+        image = image.resize(target, Image.LANCZOS)
+    # No `optimize=True`: it costs measurable time per plate and these are
+    # placeholder renders, not the shipped artwork.
+    image.save(out_path, format="PNG")
     return out_path

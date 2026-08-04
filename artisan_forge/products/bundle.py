@@ -1,4 +1,4 @@
-"""Bundle Studio: ChatGPT writes the pages, Artisan Forge lays them out.
+"""Bundle Studio: the model writes the pages, Artisan Forge lays them out.
 
 Give it a topic ("self-care for new mums", "ADHD-friendly meal planning") and it
 produces a multi-page printable bundle: prompt pages, checklists, trackers,
@@ -620,7 +620,7 @@ def build_bundle(
     result = BuildResult(spec=spec, run_dir=run_dir, product_type="bundle")
 
     # 1. content
-    report("Writing bundle content with ChatGPT", 0.05)
+    report("Writing bundle content", 0.05)
     writer = CopyStudio(settings, offline=None if spec.generate_ai_copy else True)
     raw_plan = writer.ask_json(content_prompt(spec))
     plan = normalise_plan(raw_plan, spec) if raw_plan else template_plan(spec)

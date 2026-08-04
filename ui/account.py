@@ -8,6 +8,7 @@ import streamlit as st
 
 from artisan_forge.ai.text_client import model_chain
 from artisan_forge.config import get_settings
+from artisan_forge.products.crochet import short_model
 from artisan_forge.saas import auth, db
 
 from . import canva_panel, etsy_panel, theme
@@ -28,16 +29,20 @@ def render(user: dict) -> None:
             ("Role", user.get("role", "member"), user["email"]),
             (
                 "Image model",
-                settings.image_model if settings.ai_available else "procedural",
-                "OPENAI_API_KEY set" if settings.ai_available else "no API key",
+                short_model(settings.image_model) if settings.ai_available else "procedural",
+                f"{settings.key_env_var} set" if settings.ai_available else "no API key",
             ),
         ]
     )
 
     theme.section("Engine status", "read from environment variables")
     rows = [
-        ("OpenAI images", settings.ai_available, settings.image_model),
-        ("ChatGPT content", settings.ai_available, ", ".join(model_chain(settings)[:2])),
+        (f"{settings.provider_label} gateway", settings.ai_available, settings.base_url),
+        ("Pattern writer", settings.ai_available,
+         ", ".join(short_model(m) for m in model_chain(settings)[:2])),
+        ("Vision model (reads photos)", settings.ai_available,
+         short_model(settings.vision_model) or "same as the writer"),
+        ("Image model", settings.ai_available, short_model(settings.image_model)),
         ("Etsy app", settings.etsy_configured, settings.etsy_redirect_uri),
         ("Canva Connect", settings.canva_available, "editable designs"),
         ("Signup invite code", bool(os.getenv("AF_SIGNUP_CODE", "").strip()), "closes open signups"),
@@ -55,8 +60,10 @@ def render(user: dict) -> None:
 
     if not settings.ai_available:
         theme.note(
-            "Set OPENAI_API_KEY to switch artwork from procedural painting to gpt-image and let "
-            "ChatGPT write bundle content. Everything works without it.",
+            f"Set {settings.key_env_var} to switch artwork from procedural painting to "
+            f"{short_model(settings.image_model)} and let "
+            f"{short_model(settings.text_model)} write the content. Everything works "
+            "without it, on templates and locally painted art.",
             "info",
         )
 
