@@ -74,12 +74,18 @@ def content_prompt(
     design: str = "",
     has_reference_images: bool = False,
     batch_position: tuple[int, int] | None = None,
+    max_pages: int = 30,
 ) -> str:
     """Build the expansion request.
 
     `brief` is whatever context we have: the merged corpus from uploaded PDFs,
     an Etsy listing dump, or a written brief. The schema is spelled out in full
     because a partially-filled pattern makes for a poor product.
+
+    `max_pages` is a ceiling, not a target. There are deliberately no minimum
+    counts on the tables and lists: a coaster does not need twelve
+    abbreviations, and floors on every section are exactly why every pattern
+    used to come out the same length.
 
     `variation` is what stops a batch collapsing into one design repeated: it is
     the design direction this particular pattern has been assigned, and it takes
@@ -208,10 +214,19 @@ def content_prompt(
         '              "tags": ["13 tags, max 20 chars each"],\n'
         '              "description": "Etsy description with WHAT YOU GET and SKILL LEVEL"}\n'
         "}\n"
-        "Include at least 8 sizing table rows across the graded sizes, at least "
-        "6 troubleshooting entries, at least 12 abbreviations, and at least 4 "
-        "pattern sections with 6 or more steps each. Chart grid rows must all "
-        "be the same length."
+        "LENGTH\n"
+        "Write what this design actually needs and then stop. There is no target "
+        "length and no minimum number of rows, tags, abbreviations or "
+        "troubleshooting entries - list the ones that apply to this piece and "
+        "leave out the ones that do not. A simple accessory is a short pattern "
+        "and that is correct; a graded garment with sleeves and shaping is a "
+        "long one. Padding a section to look thorough makes the product worse.\n"
+        f"The finished PDF must fit in {max_pages} pages including the cover, "
+        "contents and reference pages, which is roughly "
+        f"{max(4, max_pages - 18)} pages of written instructions. Budget for "
+        "that: if the piece needs more room than that, simplify the "
+        "construction rather than running over.\n"
+        "Chart grid rows must all be the same length."
     )
 
 

@@ -53,6 +53,8 @@ from ..crochet import etsy_data, expand, imagery, market
 from ..crochet.batch import ALLOCATION_STRATEGIES, DEFAULT_STRATEGY
 from ..crochet.brand import BrandKit
 from ..crochet.extract import corpus_brief, extract_many, merge_sources
+from ..crochet.pdf import MAX_PAGES as PDF_MAX_PAGES
+from ..crochet.pdf import MIN_PAGES as PDF_MIN_PAGES
 from ..crochet.pdf import CrochetPDF
 from ..mockups.compose import build_listing_images
 from ..mockups.context import MockupContext
@@ -277,6 +279,9 @@ class CrochetSpec:
     bleed_in: float = 0.0
     include_chart: bool = True
     include_gallery: bool = True
+    # Page ceiling, not a target. The pattern is as long as the design needs it
+    # to be; this is only the point past which the least useful pages are cut.
+    max_pages: int = PDF_MAX_PAGES
 
     # generation and cost
     cost_mode: str = DEFAULT_COST_MODE
@@ -454,6 +459,9 @@ def validate(spec: CrochetSpec) -> CrochetSpec:
     # build, so being able to skip them matters.
     spec.listing_image_count = max(0, min(10, spec.listing_image_count))
     spec.bleed_in = max(0.0, min(0.25, spec.bleed_in))
+    # A ceiling, not a target. Below the floor there is not enough room for the
+    # reference pages a pattern has to carry to be usable.
+    spec.max_pages = max(PDF_MIN_PAGES, min(60, int(spec.max_pages or PDF_MAX_PAGES)))
     spec.pattern_count = max(1, min(MAX_PATTERNS_PER_RUN, spec.pattern_count))
     spec.sources_per_pattern = max(0, min(MAX_SOURCE_FILES, spec.sources_per_pattern))
     if spec.allocation not in ALLOCATION_STRATEGIES:
@@ -1014,6 +1022,7 @@ def build_crochet(
             design=imagery.design_brief_text(design),
             has_reference_images=bool(attached),
             batch_position=(spec.variant_index, spec.variant_total),
+            max_pages=spec.max_pages,
         )
         raw = writer.ask_json(prompt, images=attached or None, temperature=variant_heat)
         if raw:
@@ -1060,8 +1069,15 @@ def build_crochet(
         captions=art["captions"],
         include_chart=spec.include_chart,
         include_gallery=spec.include_gallery,
+        max_pages=spec.max_pages,
     )
     pdf_path, pages = document.render(print_dir / f"{slug}-{spec.paper}.pdf")
+    if document.trimmed:
+        dropped = ", ".join(sorted(set(document.trimmed)))
+        result.warnings.append(
+            f"The pattern ran past the {spec.max_pages}-page limit, so these pages "
+            f"were dropped: {dropped}"
+        )
     result.pdf_path = pdf_path
     result.pdf_paths[spec.paper] = pdf_path
 

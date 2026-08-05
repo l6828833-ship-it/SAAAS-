@@ -24,6 +24,8 @@ from artisan_forge.products.crochet import (
     MAX_SOURCE_FILES,
     MODE_ORDER,
     MODES,
+    PDF_MAX_PAGES,
+    PDF_MIN_PAGES,
     CrochetSpec,
     build_crochet_batch,
     short_model,
@@ -608,6 +610,13 @@ def render(user: dict) -> None:
             "Bleed (inches)", min_value=0.0, max_value=0.25, value=0.0, step=0.125,
             key="crochet_bleed",
         )
+        max_pages = col_d.slider(
+            "Page limit", PDF_MIN_PAGES, 60, PDF_MAX_PAGES, key="crochet_max_pages",
+            help="A ceiling, not a target. The pattern is as long as the design "
+                 "needs - a coaster comes out short, a graded cardigan long. If a "
+                 "plan runs over, the least useful pages (gallery, spare "
+                 "troubleshooting) are dropped; the instructions never are.",
+        )
 
         st.write("")
         st.markdown(
@@ -645,6 +654,7 @@ def render(user: dict) -> None:
         bleed_in=float(bleed),
         include_chart=include_chart,
         include_gallery=include_gallery,
+        max_pages=int(max_pages),
         cost_mode=cost_mode,
         use_canva=bool(use_canva),
         canva_pull_back=bool(canva_pull_back),

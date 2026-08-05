@@ -15,6 +15,12 @@ Page order follows how a maker actually uses a pattern:
 Pages are only added when their content exists, and the long sections paginate
 themselves: `page_plan()` measures wrapped text against the available height, so
 instructions flow across as many pages as they need without ever overflowing.
+
+The document has no target length. A coaster pattern is short because a coaster
+is simple; a graded cardigan runs long because it has to. What it does have is a
+ceiling - `max_pages`, 30 by default - and if the plan goes over it, the pages
+that add the least are dropped first (see `TRIM_ORDER`). The instructions are
+never dropped: they are the product.
 """
 
 from __future__ import annotations
@@ -29,6 +35,27 @@ from .brand import BrandKit
 
 # Front-matter pages that are not numbered as pattern content.
 UNNUMBERED = {"cover", "credits"}
+
+# Page ceiling. A pattern is allowed to be however long it needs to be up to
+# here; Etsy buyers judge a pattern on whether it is complete, not on bulk, and
+# a document padded out to a page target reads as padding.
+MAX_PAGES = 30
+MIN_PAGES = 8
+
+# What gets dropped when a plan is over the ceiling, worst value first. Entries
+# marked "extra" only give up their repeats: the first page of a section stays,
+# so nothing disappears from the contents page entirely.
+TRIM_ORDER: tuple[tuple[str, bool], ...] = (
+    ("gallery", False),          # the photos are already on the listing
+    ("troubleshooting", True),   # keep the first page, drop the overflow
+    ("counts", True),
+    ("seaming", True),
+    ("chart", False),            # the written instructions cover the same ground
+    ("foundation", False),
+)
+# Everything else stays. The instructions are the product, and gauge,
+# abbreviations, troubleshooting and care are checked by `verify_pattern_pdf` as
+# the minimum a pattern has to carry to be usable.
 
 
 class CrochetPDF(DrawKit):
@@ -46,6 +73,7 @@ class CrochetPDF(DrawKit):
         captions: dict[str, str] | None = None,
         include_chart: bool = True,
         include_gallery: bool = True,
+        max_pages: int = MAX_PAGES,
     ):
         super().__init__(theme, trim_size_in, bleed_in)
         self.pattern = pattern
@@ -55,6 +83,9 @@ class CrochetPDF(DrawKit):
         self.captions = captions or {}
         self.include_chart = include_chart
         self.include_gallery = include_gallery
+        self.max_pages = max(MIN_PAGES, int(max_pages or MAX_PAGES))
+        # Filled by `page_plan()`: what the ceiling cost, for the build warnings.
+        self.trimmed: list[str] = []
 
         # A brand accent overrides the theme's, so the document matches the shop.
         self.accent = self.brand.accent_hex or self.theme.color("accent")
@@ -106,10 +137,48 @@ class CrochetPDF(DrawKit):
             pages.append({"kind": "gallery", "slots": gallery_slots})
         pages.append({"kind": "thanks"})
 
+        # Enforce the ceiling before the contents page is built, so the numbers
+        # on it point at the pages that actually survive.
+        pages = self._trim_to_budget(pages)
+
         # contents goes after the cover, once we know what the pages are
         listed = [page for page in pages if page["kind"] not in UNNUMBERED]
         if len(listed) > 6:
             pages.insert(2, {"kind": "contents", "entries": self._contents(listed)})
+        return pages
+
+    def _trim_to_budget(self, pages: list[dict]) -> list[dict]:
+        """Drop the least valuable pages until the plan fits `max_pages`.
+
+        The contents page is not in `pages` yet, so it is reserved for here.
+        Returns the plan unchanged when it already fits, which is the normal
+        case - the ceiling is a guard rail, not a target.
+        """
+        self.trimmed = []
+        # A plan long enough to need trimming always gets a contents page, so
+        # reserve one page for it.
+        budget = max(MIN_PAGES, self.max_pages - 1)
+        if len(pages) <= budget:
+            return pages
+
+        for kind, extras_only in TRIM_ORDER:
+            if len(pages) <= budget:
+                break
+            indexes = [i for i, page in enumerate(pages) if page["kind"] == kind]
+            if extras_only:
+                indexes = indexes[1:]          # keep the first page of the section
+            # Drop from the back, so a section loses its tail rather than its head.
+            for index in reversed(indexes):
+                if len(pages) <= budget:
+                    break
+                pages.pop(index)
+                self.trimmed.append(kind)
+
+        if len(pages) > budget:
+            # Only instructions and core reference pages are left. A pattern with
+            # its rows cut out is not a pattern, so the ceiling gives way here
+            # and the caller gets told about it.
+            self.trimmed.append("over budget")
         return pages
 
     def _contents(self, pages: list[dict]) -> list[tuple[str, int]]:
