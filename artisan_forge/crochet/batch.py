@@ -47,8 +47,12 @@ DEFAULT_STRATEGY = "auto"
 # a faithful rebuild: if someone asks for one pattern from one upload they want
 # that upload rebuilt, not reinterpreted. Everything after it moves further away.
 DESIGN_DIRECTIONS: tuple[str, ...] = (
-    "A faithful, professionally graded rebuild of the source: same silhouette, "
-    "same stitch pattern, same construction, written properly and completely.",
+    "The same design, rebranded and rewritten. Keep the item, the stitch "
+    "pattern, the yarn weight, the hook, the construction and the finished "
+    "measurements exactly as the source has them. The work is rewriting the "
+    "instructions properly, grading them across the size range, and presenting "
+    "them under this shop's own branding with new photography. Do not redesign "
+    "anything.",
     "An oversized, relaxed version with deeper armholes and extra positive ease, "
     "in the same stitch pattern.",
     "A cropped, shorter version with a wider body and a ribbed hem.",

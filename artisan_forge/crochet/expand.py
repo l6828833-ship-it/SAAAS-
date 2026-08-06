@@ -75,6 +75,7 @@ def content_prompt(
     has_reference_images: bool = False,
     batch_position: tuple[int, int] | None = None,
     max_pages: int = 30,
+    faithful: bool = False,
 ) -> str:
     """Build the expansion request.
 
@@ -104,11 +105,28 @@ def content_prompt(
             "from the same source material. It must stand alone as its own product "
             "and must not read like a restyle of the others.\n"
         )
-    direction_block = (
-        f"\nDESIGN DIRECTION FOR THIS PATTERN (this takes priority over the "
-        f"source material wherever they disagree)\n{variation}\n"
-        if variation else ""
-    )
+    if faithful:
+        # A rebuild is a rewrite, not a reinterpretation. Here the source is the
+        # authority and the direction only describes how it is presented.
+        direction_block = (
+            "\nTHIS IS A REBUILD, NOT A NEW DESIGN\n"
+            "The source material is the authority. Keep the same item, the same "
+            "stitch pattern, the same yarn weight and hook, the same "
+            "construction and the same finished measurements. Your job is to "
+            "write those instructions out properly and completely, grade them "
+            "across the size range, and present them as this shop's own "
+            "product. Do not invent a different garment, a different fabric or "
+            "a different yarn weight, and do not carry over the original shop "
+            "name, designer name or any branding from the source - the title "
+            "must name the item being made.\n"
+            + (f"{variation}\n" if variation else "")
+        )
+    else:
+        direction_block = (
+            f"\nDESIGN DIRECTION FOR THIS PATTERN (this takes priority over the "
+            f"source material wherever they disagree)\n{variation}\n"
+            if variation else ""
+        )
     design_block = f"\n{design}\n" if design else ""
     reference_block = (
         "\nREFERENCE PHOTOGRAPHS\n"
@@ -301,14 +319,35 @@ def template_pattern(
     bust_m = BUST_FOR.get("M", 40)
     panel_sts = int(round(stitches / 4 * (bust_m / 2)))
 
+    # The source's own pieces win over the built-in panel skeleton whenever the
+    # extractor found any. Everything downstream keys off this: a pattern built
+    # from real pieces is not graded by bust and is not blocked flat.
+    source_sections = _sections_from_source(corpus)
+    style = sizing_style(garment)
+    stuffed = is_stuffed(garment)
+    if source_sections:
+        labels = ["One size"] if style == "single" else labels
+    piece_names = [section["title"] for section in source_sections]
+
     return {
         "title": display_title,
-        "subtitle": f"A graded {garment} pattern in {weight} weight yarn",
+        "subtitle": (
+            f"{_article(garment).title()} {garment} pattern in {weight} weight yarn"
+            if style == "single"
+            else f"A graded {garment} pattern in {weight} weight yarn"
+        ),
         "intro": (
-            f"This is a complete, graded pattern for a {garment} worked in {weight} weight yarn. "
-            "Read the notes and check your gauge before you begin - everything else in the "
-            "pattern depends on it. Stitch counts are given at the end of every row so you can "
-            "confirm your work as you go."
+            f"This is a complete pattern for {_article(garment)} {garment} worked in "
+            f"{weight} weight yarn. "
+            + (
+                "Work at a tight gauge so the stuffing does not show through, and check it "
+                "before you start - the finished size depends on it. "
+                if stuffed else
+                "Read the notes and check your gauge before you begin - everything else in "
+                "the pattern depends on it. "
+            )
+            + "Stitch counts are given at the end of every round so you can confirm your "
+              "work as you go."
         ),
         "skill_level": "advanced beginner",
         "primary_stitch": primary,
@@ -332,10 +371,18 @@ def template_pattern(
             {"item": "Yarn", "detail": f"{yardage[len(yardage) // 2]['yards']} yd {weight} weight "
                                        f"({' or '.join(fibres[:2])}) for the mid size"},
             {"item": "Hook", "detail": f"{hook_mm:g} mm, or whatever gives you gauge"},
-            {"item": "Tapestry needle", "detail": "for weaving in ends and seaming"},
-            {"item": "Stitch markers", "detail": "6-8, to mark row ends and shaping points"},
+            {"item": "Tapestry needle", "detail": "for weaving in ends and sewing pieces together"},
+            {"item": "Stitch markers", "detail": "6-8, to mark the start of each round"},
             {"item": "Tape measure", "detail": "for gauge and finished measurements"},
-            {"item": "Blocking mats and pins", "detail": "or a towel and a flat surface"},
+            *(
+                [
+                    {"item": "Toy stuffing", "detail": "polyester fibrefill, enough to fill "
+                                                      "every piece firmly"},
+                    {"item": "Safety eyes or embroidery thread", "detail": "for the face"},
+                ]
+                if stuffed else
+                [{"item": "Blocking mats and pins", "detail": "or a towel and a flat surface"}]
+            ),
             {"item": "Scissors", "detail": ""},
         ],
         "yarn_guide": {
@@ -367,24 +414,7 @@ def template_pattern(
                 "hook size; fewer, go down. Gauge decides the finished size."
             ),
         },
-        "sizes": {
-            "labels": labels,
-            "rows": [
-                {"measure": "Finished bust", "values": [f"{BUST_FOR.get(l, 40)} in" for l in labels]},
-                {"measure": "To fit bust", "values": [f"{BUST_FOR.get(l, 40) - 4} in" for l in labels]},
-                {"measure": "Body length", "values": _grade(24, labels)},
-                {"measure": "Sleeve length", "values": _grade(18, labels)},
-                {"measure": "Upper arm", "values": _grade(13, labels)},
-                {"measure": "Back width", "values": _grade(16, labels)},
-                {"measure": "Armhole depth", "values": _grade(8, labels)},
-                {"measure": "Neck width", "values": _grade(7, labels)},
-            ],
-            "ease": "4-6 in positive ease for a relaxed fit",
-            "notes": (
-                "Measure your actual bust, then pick the size whose finished bust is 4-6 in "
-                "larger. Size down for a closer fit, up for an oversized one."
-            ),
-        },
+        "sizes": _template_sizes(style, labels, garment, corpus),
         "abbreviations": _abbreviation_rows(corpus),
         "special_stitches": [
             {
@@ -403,34 +433,55 @@ def template_pattern(
                 ),
             },
         ],
-        "construction": {
-            "summary": (
-                f"The {garment} is worked flat in separate panels, then seamed at the shoulders "
-                "and sides. Working flat keeps the stitch pattern consistent and makes it easy "
-                "to adjust the length before you commit to seaming."
-            ),
-            "pieces": ["Back panel", "Front panel x2", "Sleeve x2", "Neckline band"],
-            "order": [
-                "Make a gauge swatch and block it",
-                "Work the back panel",
-                "Work both front panels",
-                "Seam the shoulders",
-                "Work the sleeves into the armholes",
-                "Seam the sides and underarms",
-                "Add the neckline band",
-                "Block the finished piece and weave in all ends",
-            ],
-        },
-        "schematic": {
-            "pieces": [
-                {"name": "Back", "width_in": 20, "height_in": 24, "shape": "tee",
-                 "note": "worked flat"},
-                {"name": "Front x2", "width_in": 10, "height_in": 24, "shape": "rect",
-                 "note": "mirror the shaping"},
-                {"name": "Sleeve x2", "width_in": 13, "height_in": 18, "shape": "sleeve",
-                 "note": "worked top down"},
-            ]
-        },
+        "construction": (
+            {
+                "summary": (
+                    f"The {garment} is made in {len(piece_names)} separate pieces, "
+                    + ("each worked in the round, then stuffed and sewn together."
+                       if stuffed else
+                       "then joined as described in the assembly section.")
+                    + " Make every piece before you start assembling: it is much easier to "
+                      "judge the proportions with all of them in front of you."
+                ),
+                "pieces": piece_names,
+                "order": ["Make a gauge swatch", *[f"Work the {n.lower()}" for n in piece_names],
+                          "Assemble as described in the assembly section"],
+            }
+            if piece_names else
+            {
+                "summary": (
+                    f"The {garment} is worked flat in separate panels, then seamed at the "
+                    "shoulders and sides. Working flat keeps the stitch pattern consistent and "
+                    "makes it easy to adjust the length before you commit to seaming."
+                ),
+                "pieces": ["Back panel", "Front panel x2", "Sleeve x2", "Neckline band"],
+                "order": [
+                    "Make a gauge swatch and block it",
+                    "Work the back panel",
+                    "Work both front panels",
+                    "Seam the shoulders",
+                    "Work the sleeves into the armholes",
+                    "Seam the sides and underarms",
+                    "Add the neckline band",
+                    "Block the finished piece and weave in all ends",
+                ],
+            }
+        ),
+        # The schematic draws garment panels, so it is only meaningful for one.
+        "schematic": (
+            {}
+            if piece_names or style != "bust" else
+            {
+                "pieces": [
+                    {"name": "Back", "width_in": 20, "height_in": 24, "shape": "tee",
+                     "note": "worked flat"},
+                    {"name": "Front x2", "width_in": 10, "height_in": 24, "shape": "rect",
+                     "note": "mirror the shaping"},
+                    {"name": "Sleeve x2", "width_in": 13, "height_in": 18, "shape": "sleeve",
+                     "note": "worked top down"},
+                ]
+            }
+        ),
         "chart": {
             "chain": 15,
             "turning_chain": _turning_chain(primary),
@@ -451,12 +502,15 @@ def template_pattern(
                 ["sl"] * 12,
             ],
         },
-        "sections": _template_sections(primary, panel_sts, rows),
-        "stitch_counts": _template_counts(primary, panel_sts),
+        "sections": source_sections or _template_sections(primary, panel_sts, rows),
+        # An empty table is filled in from the sections by `ensure_stitch_counts`,
+        # which is right when the rounds came from the source.
+        "stitch_counts": [] if source_sections else _template_counts(primary, panel_sts),
         "seaming": [
             {
                 "method": "Mattress stitch",
-                "used_for": "side seams and underarms",
+                "used_for": "joining pieces edge to edge" if piece_names
+                            else "side seams and underarms",
                 "how": (
                     "Lay both pieces flat, right sides up, edges touching. Pick up the bar one "
                     "whole stitch in from the edge, alternating sides, and pull the thread snug "
@@ -465,7 +519,8 @@ def template_pattern(
             },
             {
                 "method": "Whipstitch",
-                "used_for": "setting in the sleeves",
+                "used_for": "sewing a stuffed piece onto the body" if stuffed
+                            else "setting in the sleeves",
                 "how": (
                     "Hold the sleeve cap against the armhole, right sides together. Take the "
                     "needle through both edge stitches at a slant, spacing the stitches evenly "
@@ -490,7 +545,9 @@ def template_pattern(
                 ),
             },
         ],
-        "assembly": [
+        # The source's own finishing steps are the real assembly order for a
+        # rebuild. Ours only applies to the panel skeleton.
+        "assembly": (corpus.get("assembly_steps") or [])[:14] or [
             "Block every panel to the finished measurements before seaming.",
             "Seam the shoulders with an invisible horizontal seam.",
             "Mark the armhole depth on the front and back with stitch markers.",
@@ -500,22 +557,43 @@ def template_pattern(
             "Weave in all ends along a seam line for at least two inches.",
             "Block the finished piece once more and let it dry flat.",
         ],
-        "blocking": {
-            "method": "wet blocking",
-            "steps": [
-                "Fill a basin with cool water and a little wool wash.",
-                "Submerge the piece and press gently to let it soak for 20 minutes.",
-                "Lift it out supporting the whole weight, and press out the water.",
-                "Roll it in a towel and press again. Never wring or twist.",
-                "Pin it to the finished measurements on a flat surface or blocking mats.",
-                "Let it dry completely before unpinning, which can take a full day.",
-            ],
-            "notes": (
-                "Blocking is what makes the stitches even and the measurements accurate, so do "
-                "not skip it. Check the yarn label first: acrylic can be steamed lightly but "
-                "melts under a hot iron, and superwash wool grows more than regular wool."
-            ),
-        },
+        "blocking": (
+            {
+                "method": "shaping and stuffing",
+                "steps": [
+                    "Stuff each piece a little at a time, pushing the filling into the far end "
+                    "first with the blunt end of a hook.",
+                    "Keep the stuffing even: lumps show through the fabric and never settle out.",
+                    "Fill firmly enough that the piece holds its shape when squeezed, but not so "
+                    "hard that the stitches open up and the filling shows.",
+                    "Roll each stuffed piece between your palms to even it out before sewing.",
+                    "Check the proportions of every piece against the photographs before you "
+                    "sew anything down.",
+                ],
+                "notes": (
+                    "A stuffed piece is not blocked. Shape comes from how it is filled, which "
+                    "is why the gauge is tight - loose fabric lets the filling through and no "
+                    "amount of shaping will fix it afterwards."
+                ),
+            }
+            if stuffed else
+            {
+                "method": "wet blocking",
+                "steps": [
+                    "Fill a basin with cool water and a little wool wash.",
+                    "Submerge the piece and press gently to let it soak for 20 minutes.",
+                    "Lift it out supporting the whole weight, and press out the water.",
+                    "Roll it in a towel and press again. Never wring or twist.",
+                    "Pin it to the finished measurements on a flat surface or blocking mats.",
+                    "Let it dry completely before unpinning, which can take a full day.",
+                ],
+                "notes": (
+                    "Blocking is what makes the stitches even and the measurements accurate, so "
+                    "do not skip it. Check the yarn label first: acrylic can be steamed lightly "
+                    "but melts under a hot iron, and superwash wool grows more than regular wool."
+                ),
+            }
+        ),
         "troubleshooting": [
             {
                 "problem": "My piece is coming out wider than the pattern says",
@@ -646,8 +724,127 @@ def _abbreviation_rows(corpus: dict) -> list[dict]:
     return rows[:32]
 
 
+# How an item is sized. A stuffed toy has no bust measurement, and printing a
+# six-size bust table on one is the clearest possible signal that nobody read
+# the source. "bust" grades by body, "circumference" by the part it goes on,
+# "single" is one size with finished dimensions.
+SIZING_STYLE = {
+    "sweater": "bust", "cardigan": "bust", "top": "bust", "dress": "bust",
+    "hat": "circumference", "socks": "circumference", "mittens": "circumference",
+    "amigurumi": "single", "coaster": "single", "blanket": "single",
+    "scarf": "single", "bag": "single",
+}
+# Items that are stuffed and sewn rather than blocked.
+STUFFED = ("amigurumi",)
+
+
+def sizing_style(garment: str) -> str:
+    return SIZING_STYLE.get((garment or "").lower(), "bust")
+
+
+def is_stuffed(garment: str) -> bool:
+    return (garment or "").lower() in STUFFED
+
+
+def _article(word: str) -> str:
+    """"a" or "an". Small thing, but "a amigurumi" on a cover looks unfinished."""
+    return "an" if (word or "").strip()[:1].lower() in "aeiou" else "a"
+
+
+def _template_sizes(style: str, labels: list[str], garment: str, corpus: dict) -> dict:
+    """The sizing table, in the terms this kind of item is actually sized in."""
+    if style == "single":
+        measured = [m for m in (corpus.get("measurements") or []) if m][:4]
+        return {
+            "labels": ["One size"],
+            "rows": [
+                {"measure": "Finished size",
+                 "values": [measured[0] if measured else "as worked at the stated gauge"]},
+                {"measure": "Gauge dependency",
+                 "values": ["a tighter gauge gives a smaller, denser piece"]},
+            ],
+            "ease": "not applicable - this is a single size",
+            "notes": (
+                f"{_article(garment).title()} {garment} is worked to one size. The finished "
+                "dimensions follow from your "
+                "gauge and your yarn, so a heavier yarn on a larger hook gives a larger piece. "
+                + ("Stuff firmly and evenly: understuffing changes the shape more than the "
+                   "stitch count does." if garment == "amigurumi" else "")
+            ).strip(),
+        }
+    if style == "circumference":
+        return {
+            "labels": labels,
+            "rows": [
+                {"measure": "Finished circumference", "values": _grade(21, labels)},
+                {"measure": "To fit circumference", "values": _grade(22, labels)},
+                {"measure": "Finished length", "values": _grade(9, labels)},
+            ],
+            "ease": "1-2 in negative ease so it stays put",
+            "notes": (
+                "Measure around the widest part, then choose the size 1-2 in smaller so the "
+                "fabric stretches to fit."
+            ),
+        }
+    return {
+        "labels": labels,
+        "rows": [
+            {"measure": "Finished bust", "values": [f"{BUST_FOR.get(l, 40)} in" for l in labels]},
+            {"measure": "To fit bust", "values": [f"{BUST_FOR.get(l, 40) - 4} in" for l in labels]},
+            {"measure": "Body length", "values": _grade(24, labels)},
+            {"measure": "Sleeve length", "values": _grade(18, labels)},
+            {"measure": "Upper arm", "values": _grade(13, labels)},
+            {"measure": "Back width", "values": _grade(16, labels)},
+            {"measure": "Armhole depth", "values": _grade(8, labels)},
+            {"measure": "Neck width", "values": _grade(7, labels)},
+        ],
+        "ease": "4-6 in positive ease for a relaxed fit",
+        "notes": (
+            "Measure your actual bust, then pick the size whose finished bust is 4-6 in "
+            "larger. Size down for a closer fit, up for an oversized one."
+        ),
+    }
+
+
+def _sections_from_source(corpus: dict) -> list[dict]:
+    """The source's own pieces, rewritten as pattern sections.
+
+    This is what makes an offline or fallback rebuild actually be a rebuild. The
+    extractor grouped every round under the piece it belongs to, so a stuffed toy
+    comes back with its head, ears, body and legs rather than the back panel and
+    set-in sleeves of `_template_sections`. Wording is tidied and the counts are
+    carried across; the construction itself is the source's.
+    """
+    sections: list[dict] = []
+    for part in corpus.get("parts") or []:
+        steps: list[dict] = []
+        for step in part.get("steps") or []:
+            text = " ".join(str(step.get("text") or "").split())
+            if not text:
+                continue
+            # A lone colour change reads as a lead-in, not an instruction.
+            steps.append({
+                "label": str(step.get("label") or ""),
+                "text": text[0].upper() + text[1:] if text else text,
+                "count": str(step.get("count") or ""),
+            })
+        if not steps:
+            continue
+        sections.append({
+            "title": str(part.get("title") or "Pattern").strip()[:60],
+            "notes": "",
+            "steps": steps[:60],
+        })
+    return sections[:20]
+
+
 def _template_sections(primary: str, panel_sts: int, rows: float) -> list[dict]:
-    """Four real sections with consistent, followable stitch counts."""
+    """Four real sections with consistent, followable stitch counts.
+
+    Only used when there is nothing to rebuild from - a written brief with no
+    upload. When an upload was parsed, `_sections_from_source` wins: inventing a
+    back panel and two sleeves for a stuffed toy is worse than useless.
+    """
     body_rows = max(20, int(round(rows / 4 * 24)))
     sleeve_sts = max(20, int(round(panel_sts * 0.62)))
     tc = _turning_chain(primary)
@@ -773,6 +970,16 @@ def default_image_briefs(garment: str, weight: str, fibres: list[str]) -> list[d
     it has to show the finished item clearly rather than just set a mood.
     """
     fibre = (fibres or ["cotton"])[0]
+    # A stuffed toy is never folded, draped, worn or laid flat, and it does not
+    # drape. Reusing the garment wording gave listing photographs that had
+    # nothing to do with the thing the pattern makes.
+    solid = is_stuffed(garment) or sizing_style(garment) == "single" and garment == "amigurumi"
+    posed = "sitting upright" if solid else "styled flat"
+    resting = "sitting upright on a bench" if solid else "folded on a bench"
+    wrapped = (
+        "sitting upright beside a length of natural twine"
+        if solid else "folded and tied with a length of natural twine"
+    )
     return [
         {
             "key": "cover",
@@ -791,7 +998,7 @@ def default_image_briefs(garment: str, weight: str, fibres: list[str]) -> list[d
             "caption": f"The finished {garment}",
             "prompt": (
                 f"Editorial product photograph of a hand-crocheted {garment} in a soft neutral "
-                f"{fibre} yarn, styled flat on a pale linen backdrop, gentle natural side light "
+                f"{fibre} yarn, {posed} on a pale linen backdrop, gentle natural side light "
                 "showing the stitch texture clearly, calm minimal composition, no text, no "
                 "people, no logos."
             ),
@@ -824,7 +1031,10 @@ def default_image_briefs(garment: str, weight: str, fibres: list[str]) -> list[d
             "caption": f"The {garment} in a styled setting",
             "prompt": (
                 f"Lifestyle photograph of a hand-crocheted {garment} in soft neutral {fibre} "
-                "yarn, draped over a pale wooden chair beside a window, warm morning daylight, "
+                + ("yarn, sitting on a pale wooden chair beside a window, warm morning daylight, "
+                   if solid else
+                   "yarn, draped over a pale wooden chair beside a window, warm morning daylight, ")
+                + 
                 "calm scandinavian interior, shallow depth of field, no text, no people."
             ),
         },
@@ -839,8 +1049,12 @@ def default_image_briefs(garment: str, weight: str, fibres: list[str]) -> list[d
         },
         {
             "key": "worn",
-            "caption": "How it drapes",
+            "caption": "Held in the hand" if solid else "How it drapes",
             "prompt": (
+                f"Photograph of a hand-crocheted {garment} in soft neutral {fibre} yarn held "
+                "gently in two cupped hands to show its size, soft natural daylight, plain pale "
+                "background, face not visible, no text, no logos."
+                if solid else
                 f"Photograph of a hand-crocheted {garment} in soft neutral {fibre} yarn being "
                 "worn, three-quarter view from the shoulders down, showing how the fabric falls "
                 "and drapes, soft natural daylight, plain pale background, face not visible, "
@@ -849,8 +1063,13 @@ def default_image_briefs(garment: str, weight: str, fibres: list[str]) -> list[d
         },
         {
             "key": "flat",
-            "caption": "Laid flat, front view",
+            "caption": "All the pieces" if solid else "Laid flat, front view",
             "prompt": (
+                f"Straight-down photograph of a finished hand-crocheted {garment} in "
+                f"{weight} weight {fibre} yarn photographed from directly above on a pale linen "
+                "surface, whole item in frame with a clean margin, even soft daylight, no text, "
+                "no props."
+                if solid else
                 f"Straight-down photograph of a hand-crocheted {garment} in {weight} weight "
                 f"{fibre} yarn laid perfectly flat and symmetrical on a pale linen surface, even "
                 "soft daylight, whole item in frame with a clean margin, no text, no props."
@@ -879,7 +1098,7 @@ def default_image_briefs(garment: str, weight: str, fibres: list[str]) -> list[d
             "caption": "In the room",
             "prompt": (
                 f"Wide interior photograph of a calm, light-filled room with a hand-crocheted "
-                f"{garment} in soft neutral {fibre} yarn as the clear subject, folded on a bench "
+                f"{garment} in soft neutral {fibre} yarn as the clear subject, {resting} "
                 "in the foreground, soft natural daylight, muted neutral palette, plenty of "
                 "negative space, no text, no people."
             ),
@@ -888,8 +1107,8 @@ def default_image_briefs(garment: str, weight: str, fibres: list[str]) -> list[d
             "key": "gift",
             "caption": "Ready to give",
             "prompt": (
-                f"Photograph of a hand-crocheted {garment} in soft neutral {fibre} yarn folded "
-                "and tied with a length of natural twine on a pale linen surface, a sprig of "
+                f"Photograph of a hand-crocheted {garment} in soft neutral {fibre} yarn "
+                f"{wrapped} on a pale linen surface, a sprig of "
                 "dried eucalyptus beside it, soft diffused daylight, calm styling, no text, "
                 "no printed labels."
             ),

@@ -21,7 +21,9 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import re
+import socket
 import time
 import urllib.error
 import urllib.request
@@ -45,6 +47,15 @@ class GatewayError(RuntimeError):
     def __init__(self, message: str, status: int | None = None):
         super().__init__(message)
         self.status = status
+        # Set for transport failures that have no HTTP status, such as a read
+        # timeout, which are worth another attempt.
+        self.retryable = False
+
+
+def _worth_retrying(error: GatewayError) -> bool:
+    if error.status is None:
+        return error.retryable
+    return error.status in RETRY_STATUSES
 
 
 def _basic_credential(key: str) -> str:
@@ -89,12 +100,29 @@ def _read_error(exc: urllib.error.HTTPError) -> str:
     return body[:300]
 
 
+def default_timeout() -> int:
+    """Read timeout in seconds, overridable with `AF_AI_TIMEOUT`.
+
+    A full pattern is a large JSON document and a 30B model on a shared router
+    can take several minutes to produce one. The old 180s ceiling was below that
+    on a slow day, and a timeout is indistinguishable downstream from the model
+    failing: the run silently fell back to the built-in template, which is how a
+    ten-piece stuffed toy came out as a graded sweater.
+    """
+    raw = os.getenv("AF_AI_TIMEOUT", "").strip()
+    try:
+        value = int(float(raw))
+    except (TypeError, ValueError):
+        return 420
+    return max(30, min(1800, value))
+
+
 def post_json(
     settings: Settings,
     path: str,
     payload: dict,
-    timeout: int = 180,
-    attempts: int = 2,
+    timeout: int | None = None,
+    attempts: int = 3,
 ) -> dict:
     """POST JSON to the gateway and return the decoded response.
 
@@ -105,6 +133,7 @@ def post_json(
     key = settings.api_key
     if not key:
         raise GatewayError(f"No API key configured ({settings.key_env_var} is empty)")
+    timeout = default_timeout() if timeout is None else timeout
 
     url = f"{settings.base_url}{path if path.startswith('/') else '/' + path}"
     body = json.dumps(payload).encode("utf-8")
@@ -132,13 +161,16 @@ def post_json(
                     continue  # wrong scheme for this gateway - try the other one
                 break  # a non-auth error will not be fixed by another scheme
             except Exception as exc:  # noqa: BLE001 - timeouts, DNS, bad JSON
+                # A read timeout has no status, so it must be marked retryable
+                # explicitly or the loop below treats it as a hard failure.
                 last = GatewayError(f"{type(exc).__name__}: {exc}")
+                last.retryable = isinstance(exc, (TimeoutError, socket.timeout, OSError))
                 break
             else:
                 _SCHEME_CACHE[settings.base_url] = scheme
                 return decoded
 
-        if last is not None and last.status is not None and last.status not in RETRY_STATUSES:
+        if last is not None and not _worth_retrying(last):
             break
         if attempt + 1 < max(1, attempts):
             time.sleep(1.5 * (attempt + 1))

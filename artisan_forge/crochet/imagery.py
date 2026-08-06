@@ -93,9 +93,17 @@ def _by_priority(briefs: list[dict]) -> list[dict]:
     return sorted(briefs, key=lambda b: rank.get(b.get("key", ""), len(rank)))
 
 
-def _shot_list(plate_count: int) -> tuple[list[str], str]:
-    """The slots a given budget will actually render, and their descriptions."""
-    wanted = list(PLATE_PRIORITY)[: max(1, min(int(plate_count), MAX_PLATES))]
+def _shot_list(plate_count: int, include_cover: bool = True) -> tuple[list[str], str]:
+    """The slots a given budget will actually render, and their descriptions.
+
+    Dropping the cover spends the whole budget on interior and gallery shots and
+    leaves the front page to the locally painted art, which some sellers prefer
+    because they overlay their own title on it anyway.
+    """
+    order = list(PLATE_PRIORITY)
+    if not include_cover:
+        order = [slot for slot in order if slot != "cover"]
+    wanted = order[: max(1, min(int(plate_count), MAX_PLATES))]
     described = "\n".join(
         f"  {slot:<9} - {PLATE_BRIEFS[slot]}" for slot in wanted if slot in PLATE_BRIEFS
     )
@@ -413,6 +421,7 @@ def build_imagery(
     brand_note: str = "",
     progress: Progress | None = None,
     briefs: list[dict] | None = None,
+    include_cover: bool = True,
 ) -> dict:
     """The whole imagery stage, start to finish.
 
@@ -425,6 +434,9 @@ def build_imagery(
     warnings: list[str] = []
     fallback = pattern.get("image_briefs") or []
     chosen_briefs = list(briefs) if briefs else list(fallback)
+    if not include_cover:
+        chosen_briefs = [b for b in chosen_briefs if b.get("key") != "cover"]
+        fallback = [b for b in fallback if b.get("key") != "cover"]
 
     if not briefs and writer is not None and not getattr(writer, "offline", True):
         try:

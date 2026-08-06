@@ -11,7 +11,7 @@ from artisan_forge.config import get_settings
 from artisan_forge.products.crochet import short_model
 from artisan_forge.saas import auth, db
 
-from . import canva_panel, etsy_panel, theme
+from . import api_keys, canva_panel, etsy_panel, theme
 
 
 def render(user: dict) -> None:
@@ -35,7 +35,9 @@ def render(user: dict) -> None:
         ]
     )
 
-    theme.section("Engine status", "read from environment variables")
+    api_keys.render(user)
+
+    theme.section("Engine status", "what the app is using right now")
     rows = [
         (f"{settings.provider_label} gateway", settings.ai_available, settings.base_url),
         ("Pattern writer", settings.ai_available,
@@ -60,7 +62,7 @@ def render(user: dict) -> None:
 
     if not settings.ai_available:
         theme.note(
-            f"Set {settings.key_env_var} to switch artwork from procedural painting to "
+            f"Add {settings.key_env_var} above to switch artwork from procedural painting to "
             f"{short_model(settings.image_model)} and let "
             f"{short_model(settings.text_model)} write the content. Everything works "
             "without it, on templates and locally painted art.",

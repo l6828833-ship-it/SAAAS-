@@ -50,6 +50,21 @@ COUNT_RE = re.compile(
     r"granny squares?|squares?|motifs?|rows?|rnds?|rounds?)\b\)?",
     re.IGNORECASE,
 )
+# A bare bracketed total at the end of a round: "... 2 sc in each st around [14]".
+# Amigurumi patterns write counts this way almost universally, and without this
+# the unit-hungry COUNT_RE above matches the "2 sc" inside the instruction
+# instead and every count in the rebuild comes out wrong.
+BARE_COUNT_RE = re.compile(r"[\[\(]\s*(?:total\s*:?\s*)?(\d{1,4})\s*(?:sts?|sc)?\s*[\]\)]\s*$",
+                           re.IGNORECASE)
+
+
+def _count_in(body: str) -> str:
+    """The stitch count a row ends with, whichever way it was written."""
+    bare = BARE_COUNT_RE.search(body.strip())
+    if bare:
+        return f"{bare.group(1)} sts"
+    tail = COUNT_RE.findall(body[-60:])
+    return f"{tail[-1][0]} {tail[-1][1].lower()}" if tail else ""
 SIZE_LINE_RE = re.compile(
     r"\b(XXS|XS|S|M|L|XL|XXL|2XL|3XL|4XL|5XL|newborn|preemie|baby|toddler|child|adult)\b",
     re.IGNORECASE,
@@ -137,6 +152,9 @@ class SourcePattern:
     stitches_used: list[str] = field(default_factory=list)   # most used first
     stitch_frequency: dict[str, int] = field(default_factory=dict)
     rows: list[dict] = field(default_factory=list)
+    # The project's pieces in order, each with its own instructions. This is
+    # what makes a rebuild follow the source instead of a generic skeleton.
+    parts: list[dict] = field(default_factory=list)
     stitch_counts: list[dict] = field(default_factory=list)
     measurements: list[str] = field(default_factory=list)
     sizes: list[str] = field(default_factory=list)
@@ -208,19 +226,74 @@ def _looks_like_heading(line: str) -> bool:
     return upper_ratio > 0.7 or (line.istitle() and not line.endswith("."))
 
 
+# Words that mark a line as the shop or the designer rather than the product.
+# The top of a self-published pattern PDF is almost always the shop banner, so
+# taking the first plausible line gave titles like "SWEET N CUTE CREATIONS".
+BRAND_HINTS = (
+    "creations", "designs", "design co", "crochet co", "patterns by", "designed by",
+    "pattern by", "copyright", "all rights", "studio", "boutique", "handmade",
+    "crafts", "yarns", "yarn co", "shop", "etsy", "ravelry", "instagram", "facebook",
+    "llc", "ltd", "inc.", "\u00a9", "\u2122", "\u00ae", "@",
+)
+JUNK_HINTS = ("page ", "www.", "http", "printed", "for personal use", "do not")
+# Signals the line names the thing being made.
+PRODUCT_HINTS = ("pattern", "crochet", "amigurumi")
+
+
+def _title_score(line: str) -> int:
+    """How much this line looks like a product title rather than a shop banner."""
+    low = line.lower()
+    letters = [ch for ch in line if ch.isalpha()]
+    if not letters:
+        return -99
+    score = 0
+    named_garment = any(
+        word in low for words in GARMENT_WORDS.values() for word in words
+    )
+    if named_garment:
+        score += 4
+    if any(hint in low for hint in PRODUCT_HINTS):
+        score += 2
+    if any(hint in low for hint in BRAND_HINTS):
+        score -= 6
+    # A shop banner is usually shouted and names no garment.
+    upper_ratio = sum(ch.isupper() for ch in letters) / len(letters)
+    if upper_ratio > 0.9 and not named_garment:
+        score -= 3
+    if line.istitle():
+        score += 1
+    if len(line.split()) < 2:
+        score -= 2
+    return score
+
+
 def _guess_title(lines: list[str], fallback: str) -> str:
-    for line in lines[:25]:
+    """The product's own name, not the shop's.
+
+    Every candidate in the opening lines is scored rather than taking the first
+    that parses: on a self-published pattern the first line is the designer's
+    shop name, which is exactly what a rebranded rebuild must not inherit.
+    """
+    best: tuple[int, int, str] | None = None
+    for position, line in enumerate(lines[:25]):
         if len(line) < 6 or len(line) > 70:
             continue
         low = line.lower()
-        if any(word in low for word in ("copyright", "\u00a9", "all rights", "page ", "www.", "http")):
+        if any(word in low for word in JUNK_HINTS):
             continue
         if ROW_RE.match(line) or ABBR_RE.match(line):
             continue
         if sum(ch.isdigit() for ch in line) > len(line) * 0.3:
             continue
-        return line.strip(" -\u2013:*")
-    return fallback
+        cleaned = line.strip(" -\u2013:*")
+        score = _title_score(cleaned)
+        # Earlier lines win ties, hence the negated position.
+        candidate = (score, -position, cleaned)
+        if best is None or candidate > best:
+            best = candidate
+    if best is None or best[0] <= 0:
+        return fallback
+    return best[2]
 
 
 def _guess_garment(text: str) -> str:
@@ -318,12 +391,94 @@ def _rows(lines: list[str]) -> tuple[list[dict], list[dict]]:
         body = match.group(3).strip()
         if len(body) < 3:
             continue
-        tail = COUNT_RE.findall(body[-60:])
-        count = f"{tail[-1][0]} {tail[-1][1].lower()}" if tail else ""
+        count = _count_in(body)
         rows.append({"kind": kind, "label": label, "text": body[:600], "count": count})
         if count:
             counts.append({"row": label, "count": count})
     return rows[:400], counts[:400]
+
+
+# Headings that introduce reference material rather than a piece to make.
+NON_PART_HEADINGS = (
+    "materials", "material", "pattern", "patterns", "gauge", "tension",
+    "abbreviations", "abbreviation", "notes", "note", "contents", "disclaimer",
+    "copyright", "assembly", "finishing", "seaming", "joining", "blocking",
+    "care", "troubleshooting", "sizes", "measurements", "yarn", "hook",
+    "special stitches", "stitches used", "skill", "introduction", "welcome",
+    "supplies", "you will need", "what you need", "terms", "legend", "key",
+)
+
+
+def _is_part_heading(line: str) -> bool:
+    """Whether this line names a piece of the project, like HEAD or LEFT SLEEVE."""
+    if not _looks_like_heading(line):
+        return False
+    low = line.lower().strip(" :-\u2013*")
+    if not low or ROW_RE.match(line):
+        return False
+    return not any(low == h or low.startswith(h + " ") or low == h + ":" for h in NON_PART_HEADINGS)
+
+
+# "ch 4", "7 sc", "sc2tog", "2hdc" - a stitch with a number attached, which is
+# what separates an instruction from a sentence that merely mentions crochet.
+INSTRUCTION_RE = re.compile(
+    r"(\b(?:ch|sc|dc|hdc|tr|dtr|sl\s*st)\s*\d)"
+    r"|(\b\d+\s*(?:ch|sc|dc|hdc|tr|dtr|sts?|stitches)\b)"
+    r"|(\b(?:sc|dc|hdc|tr)2tog\b)"
+    r"|(\bfasten off\b)",
+    re.IGNORECASE,
+)
+
+
+def _has_instructions(steps: list[dict]) -> bool:
+    """Whether these steps contain actual crochet, not just prose."""
+    return any(INSTRUCTION_RE.search(str(step.get("text") or "")) for step in steps)
+
+
+def _parts(lines: list[str], limit: int = 40) -> list[dict]:
+    """The project's pieces, each with the instructions that belong to it.
+
+    `_rows` returns every round in the document as one flat list, which loses the
+    thing a rebuild needs most: that rounds 1-22 are the HEAD and the next lot
+    are the EARS. Without that grouping a stuffed toy in ten pieces gets rebuilt
+    as a sweater with a back panel, because the only structure left is whatever
+    the template invents.
+
+    Unlabelled instruction lines are kept too - plenty of small pieces are a
+    single line with no round number ("ch 4, sc in 2nd ch from hook [3sc]"), and
+    colour changes ("using BLUE") carry the design.
+    """
+    parts: list[dict] = []
+    current: dict | None = None
+    for line in lines:
+        if _is_part_heading(line):
+            title = line.strip(" :-\u2013*").title()
+            current = {"title": title, "steps": []}
+            parts.append(current)
+            continue
+        if current is None or len(current["steps"]) >= limit:
+            continue
+        match = ROW_RE.match(line)
+        if match:
+            kind = "round" if match.group(1).lower().startswith(("rnd", "round")) else "row"
+            label = f"{'Rnd' if kind == 'round' else 'Row'} {match.group(2).strip()}"
+            body = match.group(3).strip()
+            if len(body) < 3:
+                continue
+            current["steps"].append({
+                "label": label, "text": body[:600], "count": _count_in(body),
+            })
+            continue
+        # A bare instruction, a colour change or a "fasten off" line.
+        if 8 <= len(line) <= 400 and not ABBR_RE.match(line):
+            current["steps"].append({
+                "label": "", "text": line[:400], "count": _count_in(line),
+            })
+    # A heading is only a piece if crochet actually happens under it. Without
+    # this the shop banner, the designer's name, the disclaimer and stray
+    # materials lines all come back as pieces to make, because they are
+    # capitalised lines followed by text like everything else.
+    return [part for part in parts if _has_instructions(part["steps"])][:24]
 
 
 def _section_steps(lines: list[str], headings: tuple[str, ...], limit: int = 40) -> list[str]:
@@ -332,7 +487,15 @@ def _section_steps(lines: list[str], headings: tuple[str, ...], limit: int = 40)
     capturing = False
     for line in lines:
         low = line.lower().strip(" :-\u2013")
-        if any(low == h or low.startswith(h) for h in headings) and len(line) < 60:
+        # The heading itself often carries a trailing instruction - "Assembly -
+        # use the tail of the body part being sewn" - so a flat length cap on the
+        # whole line loses the section entirely.
+        first_words = " ".join(low.split()[:3])
+        is_heading = any(
+            low == h or low.startswith(h + " ") or low.startswith(h + "-") or first_words == h
+            for h in headings
+        )
+        if is_heading and len(low.split()) < 20:
             capturing = True
             continue
         if capturing:
@@ -412,6 +575,7 @@ def extract_pattern(path: str | Path) -> SourcePattern:
     source.stitch_frequency = _stitch_frequency(text)
     source.stitches_used = list(source.stitch_frequency)
     source.rows, source.stitch_counts = _rows(lines)
+    source.parts = _parts(lines)
     source.measurements = _measurements(text)
     source.sizes = _sizes(lines)
     source.assembly_steps = _section_steps(lines, ASSEMBLY_HEADINGS)
@@ -444,6 +608,7 @@ def merge_sources(sources: list[SourcePattern]) -> dict:
     sizes: list[str] = []
     assembly: list[str] = []
     notes: list[str] = []
+    parts: list[dict] = []
     row_samples: list[dict] = []
     counts: list[dict] = []
     gauges: list[dict] = []
@@ -468,6 +633,9 @@ def merge_sources(sources: list[SourcePattern]) -> dict:
                 sizes.append(label)
         assembly.extend(source.assembly_steps[:8])
         notes.extend(source.notes[:4])
+        # Parts are kept whole, not sampled: they are the thing a rebuild
+        # reproduces, so dropping every other round would defeat the point.
+        parts.extend({"source": source.name, **part} for part in source.parts)
         counts.extend(source.stitch_counts[:20])
         if source.gauge:
             gauges.append(source.gauge)
@@ -505,6 +673,7 @@ def merge_sources(sources: list[SourcePattern]) -> dict:
         "sizes": sizes[:10],
         "measurements": measurements[:40],
         "row_samples": row_samples[:80],
+        "parts": parts[:24],
         "stitch_counts": counts[:60],
         "assembly_steps": assembly[:24],
         "notes": notes[:12],
@@ -513,8 +682,15 @@ def merge_sources(sources: list[SourcePattern]) -> dict:
     }
 
 
-def corpus_brief(corpus: dict, limit: int = 6000) -> str:
-    """Render the merged corpus as compact text for a prompt."""
+def corpus_brief(corpus: dict, limit: int = 16000) -> str:
+    """Render the merged corpus as compact text for a prompt.
+
+    The limit is generous because the piece-by-piece listing is the whole basis
+    of a faithful rebuild: a ten-piece stuffed toy truncated halfway through
+    loses its legs, and the writer then invents replacements. Input tokens are
+    the cheapest part of a run - roughly a twentieth of a cent for a brief this
+    size - so cutting it to save money is a false economy.
+    """
     lines: list[str] = []
     add = lines.append
     add(f"Parsed {corpus['sources']} source pattern(s), {corpus['total_pages']} pages total.")
@@ -546,7 +722,21 @@ def corpus_brief(corpus: dict, limit: int = 6000) -> str:
     if corpus.get("notes"):
         add("Source notes:")
         lines.extend(f"  - {n[:200]}" for n in corpus["notes"][:6])
-    if corpus.get("row_samples"):
+    if corpus.get("parts"):
+        add(
+            "PIECES THE SOURCE IS MADE OF - the rebuild must have these same "
+            "pieces, in this order, and no others:"
+        )
+        for part in corpus["parts"][:24]:
+            steps = part.get("steps") or []
+            add(f"  {part['title']} ({len(steps)} instructions)")
+            for step in steps[:14]:
+                label = f"{step['label']}: " if step.get("label") else ""
+                count = f"  [{step['count']}]" if step.get("count") else ""
+                add(f"    {label}{step['text'][:170]}{count}")
+            if len(steps) > 14:
+                add(f"    ... and {len(steps) - 14} more instructions for this piece")
+    elif corpus.get("row_samples"):
         add("Representative row instructions:")
         for row in corpus["row_samples"][:40]:
             count = f"  [{row['count']}]" if row.get("count") else ""

@@ -52,6 +52,7 @@ from ..crochet import diagrams as dgm
 from ..crochet import etsy_data, expand, imagery, market
 from ..crochet.batch import ALLOCATION_STRATEGIES, DEFAULT_STRATEGY
 from ..crochet.brand import BrandKit
+from ..crochet.imagery import MAX_PLATES
 from ..crochet.extract import corpus_brief, extract_many, merge_sources
 from ..crochet.pdf import MAX_PAGES as PDF_MAX_PAGES
 from ..crochet.pdf import MIN_PAGES as PDF_MIN_PAGES
@@ -190,6 +191,14 @@ COST_PROFILES: dict[str, CostProfile] = {
         note="Twelve distinct plates on the best image model, and the pattern "
              "written without the cheap-text shortcut.",
     ),
+    # `plates` is a placeholder here: the spec's own `custom_image_count`
+    # replaces it, which is why `plate_limit` special-cases this key.
+    "custom": CostProfile(
+        key="custom", label="Custom", plates=4,
+        image_model=_tier_model("cheap"), image_quality="medium", image_tier="cheap",
+        note="You choose how many photographs go in the PDF, and whether the "
+             "listing gallery is generated at all.",
+    ),
 }
 # "lean" is the default because it is exactly the PDF's own shot list - a cover
 # plus the three interior photos. The listing gallery is filled by the free local
@@ -282,6 +291,10 @@ class CrochetSpec:
     # Page ceiling, not a target. The pattern is as long as the design needs it
     # to be; this is only the point past which the least useful pages are cut.
     max_pages: int = PDF_MAX_PAGES
+    # Only read when cost_mode == "custom": how many AI photographs to render
+    # for the document, and whether the first one is a cover.
+    custom_image_count: int = 4
+    custom_cover: bool = True
 
     # generation and cost
     cost_mode: str = DEFAULT_COST_MODE
@@ -317,6 +330,9 @@ class CrochetSpec:
 
     @property
     def plate_limit(self) -> int:
+        """How many AI photographs to render for this run."""
+        if self.cost_mode == "custom":
+            return max(0, min(MAX_PLATES, int(self.custom_image_count)))
         return self.profile.plates
 
     @property
@@ -462,6 +478,7 @@ def validate(spec: CrochetSpec) -> CrochetSpec:
     # A ceiling, not a target. Below the floor there is not enough room for the
     # reference pages a pattern has to carry to be usable.
     spec.max_pages = max(PDF_MIN_PAGES, min(60, int(spec.max_pages or PDF_MAX_PAGES)))
+    spec.custom_image_count = max(0, min(MAX_PLATES, int(spec.custom_image_count)))
     spec.pattern_count = max(1, min(MAX_PATTERNS_PER_RUN, spec.pattern_count))
     spec.sources_per_pattern = max(0, min(MAX_SOURCE_FILES, spec.sources_per_pattern))
     if spec.allocation not in ALLOCATION_STRATEGIES:
@@ -967,7 +984,12 @@ def build_crochet(
         temperature=variant_heat,
     )
     result.warnings.extend(plan_warnings)
-    if design.get("garment"):
+    # The art director may name the garment, but not over the top of the source.
+    # On a faithful rebuild the uploaded pattern decides what the item is, or a
+    # stitch sampler comes back as an amigurumi toy.
+    source_named_it = bool((inputs.get("corpus") or {}).get("garment"))
+    faithful_rebuild = spec.variant_index <= 1
+    if design.get("garment") and not (faithful_rebuild and source_named_it):
         garment = design["garment"]
 
     # 3. imagery, then Canva. Rendered here so the plates exist before the text.
@@ -984,6 +1006,7 @@ def build_crochet(
         plate_limit=spec.plate_limit,
         writer=None,          # art direction already ran, above
         briefs=briefs,
+        include_cover=spec.cost_mode != "custom" or spec.custom_cover,
         brand_note=brand_note,
         progress=None if progress is None else (
             lambda message, fraction: report(message, 0.2 + 0.18 * fraction)
@@ -1023,10 +1046,23 @@ def build_crochet(
             has_reference_images=bool(attached),
             batch_position=(spec.variant_index, spec.variant_total),
             max_pages=spec.max_pages,
+            # Pattern one of any run is the rebuild of its source. Only the
+            # later variants of a batch are allowed to reinterpret it.
+            faithful=spec.variant_index <= 1,
         )
         raw = writer.ask_json(prompt, images=attached or None, temperature=variant_heat)
         if raw:
             pattern = expand.normalise_pattern(raw, fallback)
+        elif settings.ai_available and not settings.force_offline:
+            # This is the difference between a rebuilt pattern and a generic
+            # skeleton with the source's own numbers dropped into it. It used to
+            # pass silently, which is how a stitch sampler came back as
+            # "A graded amigurumi pattern in fingering weight yarn".
+            result.warnings.append(
+                "The pattern writer returned nothing usable, so this document is the "
+                "built-in template rather than a rebuild of your upload. Check the "
+                f"{settings.provider_label} key and quota, then build again."
+            )
         result.warnings.extend(writer.warnings)
     content_source = writer.source
     # Tidy before the counts table is derived, so the table is built from real

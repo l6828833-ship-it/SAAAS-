@@ -943,7 +943,12 @@ def test_lean_cost_mode_uses_the_cheap_model_tier(tmp_path, offline):
 def test_cost_profiles_are_ordered_cheapest_first():
     from artisan_forge.products.crochet import COST_PROFILES
 
-    estimates = [profile.estimate() for profile in COST_PROFILES.values()]
+    # "custom" is excluded on purpose: its price is whatever the seller picks in
+    # the studio, so it has no fixed place in the ladder. The presets still have
+    # to ascend, because the dropdown is read top to bottom as a price list.
+    estimates = [
+        profile.estimate() for key, profile in COST_PROFILES.items() if key != "custom"
+    ]
     assert estimates == sorted(estimates), "cost modes should ascend in price"
     # the default must be one of the cheap ones, not the $1 tier
     assert COST_PROFILES[DEFAULT_COST_MODE].estimate() < 0.05

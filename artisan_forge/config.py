@@ -259,5 +259,11 @@ class Settings:
 
 
 def get_settings() -> Settings:
-    """Build a fresh Settings object (picks up .env edits without a restart)."""
+    """Build a fresh Settings object, reading `os.environ` every time.
+
+    Nothing is cached, so a variable changed inside the running process takes
+    effect on the next call. Editing the `.env` file is different: `load_dotenv`
+    runs once when this module is imported, so a file edit needs the process
+    restarted before it is visible.
+    """
     return Settings()

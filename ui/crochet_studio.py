@@ -22,6 +22,7 @@ from artisan_forge.products.crochet import (
     MAX_PATTERNS_PER_RUN,
     MAX_PHOTOS,
     MAX_SOURCE_FILES,
+    MAX_PLATES,
     MODE_ORDER,
     MODES,
     PDF_MAX_PAGES,
@@ -597,13 +598,43 @@ def render(user: dict) -> None:
         audience = col_e.text_input(
             "Who is it for?", value="confident hobby crocheters", key="crochet_audience"
         )
-        images = col_f.slider(
-            "Listing images", 0, 10, 8, key="crochet_images",
-            help="Etsy mockups composited from the PDF pages and the AI plates. "
-                 "0 turns them off. They cost nothing but are the slowest part of a build.",
-        )
-        if int(images) == 0:
-            col_f.caption("Mockups off \u2014 PDF, diagrams and listing copy only.")
+        # In custom mode you say how many photographs the document gets, so the
+        # listing-gallery slider is replaced rather than shown alongside it -
+        # two image counts on one screen is how you end up paying for plates you
+        # did not want.
+        if cost_mode == "custom":
+            custom_images = col_f.number_input(
+                "Photographs in the PDF", min_value=0, max_value=MAX_PLATES, value=4, step=1,
+                key="crochet_custom_images",
+                help=f"AI photographs rendered for this pattern, up to {MAX_PLATES}. "
+                     "Technical diagrams are drawn locally and are always free.",
+            )
+            custom_cover = col_f.checkbox(
+                "First one is the cover", value=True, key="crochet_custom_cover",
+                help="Off spends the whole budget on interior and gallery shots and "
+                     "leaves the cover to the locally painted art.",
+            )
+            want_gallery = col_d.checkbox(
+                "Also build the Etsy listing gallery", value=False,
+                key="crochet_custom_gallery",
+                help="Composited mockups for the listing. Free, but the slowest part "
+                     "of a build.",
+            )
+            images = 8 if want_gallery else 0
+            col_f.caption(
+                f"{int(custom_images)} AI photograph(s)"
+                + (" including a cover" if custom_cover else ", no AI cover")
+                + (" \u00b7 listing gallery on" if images else " \u00b7 listing gallery off")
+            )
+        else:
+            custom_images, custom_cover = 4, True
+            images = col_f.slider(
+                "Listing images", 0, 10, 8, key="crochet_images",
+                help="Etsy mockups composited from the PDF pages and the AI plates. "
+                     "0 turns them off. They cost nothing but are the slowest part of a build.",
+            )
+            if int(images) == 0:
+                col_f.caption("Mockups off \u2014 PDF, diagrams and listing copy only.")
         include_chart = col_d.checkbox("Include stitch chart page", value=True, key="crochet_chart")
         include_gallery = col_e.checkbox("Include gallery page", value=True, key="crochet_gallery")
         bleed = col_f.number_input(
@@ -656,6 +687,8 @@ def render(user: dict) -> None:
         include_gallery=include_gallery,
         max_pages=int(max_pages),
         cost_mode=cost_mode,
+        custom_image_count=int(custom_images),
+        custom_cover=bool(custom_cover),
         use_canva=bool(use_canva),
         canva_pull_back=bool(canva_pull_back),
         listing_image_count=int(images),

@@ -70,6 +70,17 @@ CREATE TABLE IF NOT EXISTS etsy_listings (
 
 CREATE INDEX IF NOT EXISTS idx_etsy_listings_user
     ON etsy_listings(user_id, created_at DESC);
+
+-- Deployment settings entered through the app instead of the .env file. One
+-- row per environment variable. `secret` marks a value that is stored
+-- encrypted and must never be echoed back to the browser.
+CREATE TABLE IF NOT EXISTS app_settings (
+    key        TEXT PRIMARY KEY,
+    value      TEXT NOT NULL DEFAULT '',
+    secret     INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL,
+    updated_by INTEGER
+);
 """
 
 
@@ -334,3 +345,30 @@ def etsy_listings_for_run(user_id: int, run_dir: str | Path) -> list[dict]:
                 (user_id, str(run_dir)),
             ).fetchall()
         ]
+
+
+# --------------------------------------------------------------- app settings
+def save_app_setting(key: str, value: str, secret: bool, user_id: int | None = None) -> None:
+    """Store one deployment setting. `value` is already encrypted if secret."""
+    with connect() as connection:
+        connection.execute(
+            "INSERT INTO app_settings (key, value, secret, updated_at, updated_by) "
+            "VALUES (?, ?, ?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value=excluded.value, secret=excluded.secret, "
+            "updated_at=excluded.updated_at, updated_by=excluded.updated_by",
+            (key, value, int(bool(secret)), _now(), user_id),
+        )
+
+
+def get_app_settings() -> dict[str, dict]:
+    """Every stored setting, keyed by variable name."""
+    with connect() as connection:
+        return {
+            row["key"]: dict(row)
+            for row in connection.execute("SELECT * FROM app_settings").fetchall()
+        }
+
+
+def delete_app_setting(key: str) -> None:
+    with connect() as connection:
+        connection.execute("DELETE FROM app_settings WHERE key = ?", (key,))

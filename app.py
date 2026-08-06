@@ -9,7 +9,7 @@ import streamlit as st
 
 from artisan_forge import __version__
 from artisan_forge.config import get_settings
-from artisan_forge.saas import db
+from artisan_forge.saas import db, settings_store
 from ui import (
     account,
     auth_view,
@@ -32,6 +32,11 @@ st.set_page_config(
 )
 theme.inject()
 db.init_db()
+
+# Credentials entered on the Account page live in the database. Apply them to
+# the environment before anything reads Settings, so they behave exactly like
+# .env values - and so they win over them.
+settings_store.apply_saved()
 
 # Canva redirects here after authorization. This MUST run before the auth gate
 # because the redirect kills the Streamlit session (user appears logged out).
