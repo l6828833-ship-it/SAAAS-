@@ -195,10 +195,10 @@ COST_PROFILES: dict[str, CostProfile] = {
     # `plates` is a placeholder here: the spec's own `custom_image_count`
     # replaces it, which is why `plate_limit` special-cases this key.
     "custom": CostProfile(
-        key="custom", label="Custom", plates=4,
+        key="custom", label="Custom (you choose)", plates=4,
         image_model=_tier_model("cheap"), image_quality="medium", image_tier="cheap",
-        note="You choose how many photographs go in the PDF, and whether the "
-             "listing gallery is generated at all.",
+        note="You choose exactly how many photographs go in the PDF, whether "
+             "to include a cover, and whether to build the Etsy listing gallery.",
     ),
 }
 # "lean" is the default because it is exactly the PDF's own shot list - a cover

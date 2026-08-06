@@ -571,45 +571,61 @@ def render(user: dict) -> None:
         key="crochet_garment_select",
     )
     size_preset = col_b.selectbox("Sizes to grade", list(SIZE_PRESETS), key="crochet_sizes")
+    cost_options = list(COST_MODES)
     cost_mode = col_c.selectbox(
-        "Cost", list(COST_MODES),
-        index=list(COST_MODES).index(DEFAULT_COST_MODE),
+        "Cost", cost_options,
+        index=cost_options.index(DEFAULT_COST_MODE),
         format_func=lambda k: COST_MODES[k],
         key="crochet_cost",
         disabled=mode == "tech_pack",
-        help="Images are almost the whole cost of a run. Diagrams are always free.",
+        help="Controls how many AI images are generated. 'Custom' lets you choose exactly.",
     )
 
-    # ---- Custom image controls (visible immediately, not buried) ----
+    # ---- Image generation controls ----------------------------------------
+    # These appear between the top-line options and the market/brand sections,
+    # so they are always visible without expanding anything.
     if cost_mode == "custom":
-        st.markdown("**Custom image settings**")
-        img_col_a, img_col_b, img_col_c = st.columns(3)
-        custom_images = img_col_a.number_input(
-            "AI photographs to generate", min_value=0, max_value=MAX_PLATES, value=4, step=1,
-            key="crochet_custom_images",
-            help=f"How many AI photographs Gemini renders for this pattern (0-{MAX_PLATES}). "
-                 "Technical diagrams are drawn locally and are always free.",
+        st.divider()
+        st.markdown("##### Image generation")
+        img_col_a, img_col_b = st.columns(2)
+        custom_images = img_col_a.slider(
+            "Number of AI photographs", 0, MAX_PLATES, 4, key="crochet_custom_images",
+            help=f"Gemini renders this many photographs for the pattern (0 = procedural art only, max {MAX_PLATES}).",
         )
-        custom_cover = img_col_b.checkbox(
-            "Include an AI cover image", value=True, key="crochet_custom_cover",
-            help="Off leaves the cover to locally painted art and spends the whole "
-                 "budget on interior shots.",
+        custom_cover = img_col_a.checkbox(
+            "One of them is the cover", value=True, key="crochet_custom_cover",
+            help="Uncheck to leave the cover as locally painted art.",
         )
-        want_gallery = img_col_c.checkbox(
-            "Build Etsy listing gallery", value=False,
+        want_gallery = img_col_b.checkbox(
+            "Also generate Etsy listing mockups", value=False,
             key="crochet_custom_gallery",
-            help="Composited mockups from the PDF pages for the Etsy gallery. "
-                 "Free but slow.",
+            help="Composited mockup images for the Etsy gallery (free, but slow to build).",
         )
-        images = 8 if want_gallery else 0
-        st.caption(
-            f"{int(custom_images)} AI photograph(s)"
-            + (" including a cover" if custom_cover else ", no AI cover")
-            + (" \u00b7 listing gallery on" if images else " \u00b7 no listing gallery")
-        )
+        if want_gallery:
+            images = img_col_b.slider(
+                "How many listing mockups", 1, 10, 8, key="crochet_custom_listing_count",
+            )
+        else:
+            images = 0
+        # Summary
+        parts = []
+        if custom_images:
+            parts.append(f"{int(custom_images)} AI photo{'s' if custom_images != 1 else ''}")
+            if custom_cover:
+                parts.append("including cover")
+            else:
+                parts.append("no AI cover")
+        else:
+            parts.append("no AI photos (procedural only)")
+        if images:
+            parts.append(f"{images} listing mockups")
+        else:
+            parts.append("no listing mockups")
+        st.caption(" \u00b7 ".join(parts))
+        st.divider()
     else:
         custom_images, custom_cover = 4, True
-        images = None  # set below in Advanced
+        images = None  # set in Advanced options below
 
     market_fragment = _market_inputs(mode)
     brand = _brand_inputs()
