@@ -580,6 +580,37 @@ def render(user: dict) -> None:
         help="Images are almost the whole cost of a run. Diagrams are always free.",
     )
 
+    # ---- Custom image controls (visible immediately, not buried) ----
+    if cost_mode == "custom":
+        st.markdown("**Custom image settings**")
+        img_col_a, img_col_b, img_col_c = st.columns(3)
+        custom_images = img_col_a.number_input(
+            "AI photographs to generate", min_value=0, max_value=MAX_PLATES, value=4, step=1,
+            key="crochet_custom_images",
+            help=f"How many AI photographs Gemini renders for this pattern (0-{MAX_PLATES}). "
+                 "Technical diagrams are drawn locally and are always free.",
+        )
+        custom_cover = img_col_b.checkbox(
+            "Include an AI cover image", value=True, key="crochet_custom_cover",
+            help="Off leaves the cover to locally painted art and spends the whole "
+                 "budget on interior shots.",
+        )
+        want_gallery = img_col_c.checkbox(
+            "Build Etsy listing gallery", value=False,
+            key="crochet_custom_gallery",
+            help="Composited mockups from the PDF pages for the Etsy gallery. "
+                 "Free but slow.",
+        )
+        images = 8 if want_gallery else 0
+        st.caption(
+            f"{int(custom_images)} AI photograph(s)"
+            + (" including a cover" if custom_cover else ", no AI cover")
+            + (" \u00b7 listing gallery on" if images else " \u00b7 no listing gallery")
+        )
+    else:
+        custom_images, custom_cover = 4, True
+        images = None  # set below in Advanced
+
     market_fragment = _market_inputs(mode)
     brand = _brand_inputs()
 
@@ -603,31 +634,9 @@ def render(user: dict) -> None:
         # two image counts on one screen is how you end up paying for plates you
         # did not want.
         if cost_mode == "custom":
-            custom_images = col_f.number_input(
-                "Photographs in the PDF", min_value=0, max_value=MAX_PLATES, value=4, step=1,
-                key="crochet_custom_images",
-                help=f"AI photographs rendered for this pattern, up to {MAX_PLATES}. "
-                     "Technical diagrams are drawn locally and are always free.",
-            )
-            custom_cover = col_f.checkbox(
-                "First one is the cover", value=True, key="crochet_custom_cover",
-                help="Off spends the whole budget on interior and gallery shots and "
-                     "leaves the cover to the locally painted art.",
-            )
-            want_gallery = col_d.checkbox(
-                "Also build the Etsy listing gallery", value=False,
-                key="crochet_custom_gallery",
-                help="Composited mockups for the listing. Free, but the slowest part "
-                     "of a build.",
-            )
-            images = 8 if want_gallery else 0
-            col_f.caption(
-                f"{int(custom_images)} AI photograph(s)"
-                + (" including a cover" if custom_cover else ", no AI cover")
-                + (" \u00b7 listing gallery on" if images else " \u00b7 listing gallery off")
-            )
+            # Already handled above the Advanced expander
+            pass
         else:
-            custom_images, custom_cover = 4, True
             images = col_f.slider(
                 "Listing images", 0, 10, 8, key="crochet_images",
                 help="Etsy mockups composited from the PDF pages and the AI plates. "
