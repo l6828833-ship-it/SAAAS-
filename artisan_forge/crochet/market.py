@@ -796,6 +796,7 @@ def listing_prompt(
     report: MarketReport,
     garment: str = "",
     shop: str = "",
+    source_title: str = "",
 ) -> str:
     """Ask ChatGPT for the listing, given the pattern and the market data."""
     sizes = (pattern.get("sizes") or {}).get("labels") or []
@@ -805,6 +806,16 @@ def listing_prompt(
         if report.suggested_price else
         "No competitor pricing was available; price it for a premium graded pattern."
     )
+    # The source title often carries the character or design name which is the
+    # single most important search keyword for buyers looking for this specific
+    # pattern. Without it the listing is generic.
+    keyword_line = ""
+    if source_title:
+        keyword_line = (
+            f"- IMPORTANT: The pattern is called \"{source_title}\". This name (or the key "
+            "words from it) MUST appear in the title and at least two of the tags, because "
+            "buyers search for it by name.\n"
+        )
     return (
         "You are writing the Etsy listing for a crochet PATTERN PDF (not a finished item). "
         "Use the market research to choose wording and tags that will actually get found.\n\n"
@@ -818,6 +829,7 @@ def listing_prompt(
         "RULES\n"
         f"- Title: at most {MAX_TITLE_LEN} characters. Lead with the highest-volume "
         "keywords a buyer would actually type. Follow the title conventions above.\n"
+        + keyword_line +
         f"- Tags: exactly {MAX_TAGS} tags, each at most {MAX_TAG_LEN} characters, "
         "lowercase, no punctuation. Prefer the high-volume tags listed above, but do "
         "not repeat the same phrase twice, and include a couple of lower-competition "

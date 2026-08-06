@@ -107,7 +107,14 @@ class CrochetPDF(DrawKit):
         if p.get("gauge"):
             pages.append({"kind": "gauge"})
         if (p.get("sizes") or {}).get("rows"):
-            pages.append({"kind": "sizing"})
+            # Skip a whole page for a one-size table with no graded measurements.
+            rows = (p["sizes"] or {}).get("rows") or []
+            labels = (p["sizes"] or {}).get("labels") or []
+            has_grading = len(labels) > 1 and any(
+                len(r.get("values", [])) > 1 for r in rows
+            )
+            if has_grading:
+                pages.append({"kind": "sizing"})
         if p.get("abbreviations") or p.get("special_stitches"):
             pages.append({"kind": "abbreviations"})
         if p.get("construction"):
@@ -124,12 +131,31 @@ class CrochetPDF(DrawKit):
             pages.extend(self._counts_pages(p["stitch_counts"]))
         if p.get("assembly"):
             pages.append({"kind": "assembly"})
-        for index, entry in enumerate((p.get("seaming") or [])[:3], start=1):
-            pages.append({"kind": "seaming", "entry": entry, "diagram": f"seam_{index}"})
+        # Seaming pages only for items that actually have multiple flat panels to
+        # join with a dedicated technique. A stuffed toy uses the assembly steps
+        # rather than mattress-stitch diagrams, and the seaming section for one
+        # is generic filler that inflates a 14-page source into 27.
+        seaming = p.get("seaming") or []
+        # Heuristic: if the assembly is "sew pieces onto the body" rather than
+        # "seam the shoulders and sides", seaming pages add no value.
+        sizing_style = (p.get("sizes") or {}).get("labels") or []
+        is_multi_panel = (
+            len(sizing_style) > 1
+            or any("shoulder" in str(e.get("used_for") or "").lower() or
+                   "side seam" in str(e.get("used_for") or "").lower()
+                   for e in seaming)
+        )
+        if is_multi_panel:
+            for index, entry in enumerate(seaming[:3], start=1):
+                pages.append({"kind": "seaming", "entry": entry, "diagram": f"seam_{index}"})
         if (p.get("blocking") or {}).get("steps"):
             pages.append({"kind": "blocking"})
         if p.get("troubleshooting"):
-            pages.extend(self._trouble_pages(p["troubleshooting"]))
+            # A stuffed toy or a short pattern does not need 8 troubleshooting
+            # entries filling a page. Only add it when it is substantial.
+            trouble = p["troubleshooting"]
+            if len(trouble) >= 3:
+                pages.extend(self._trouble_pages(trouble))
         if p.get("care"):
             pages.append({"kind": "care"})
         gallery_slots = [s for s in ("finished", "styled", "texture") if s in self.plates]

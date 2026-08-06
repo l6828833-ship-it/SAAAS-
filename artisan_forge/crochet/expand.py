@@ -506,45 +506,63 @@ def template_pattern(
         # An empty table is filled in from the sections by `ensure_stitch_counts`,
         # which is right when the rounds came from the source.
         "stitch_counts": [] if source_sections else _template_counts(primary, panel_sts),
-        "seaming": [
-            {
-                "method": "Mattress stitch",
-                "used_for": "joining pieces edge to edge" if piece_names
-                            else "side seams and underarms",
-                "how": (
-                    "Lay both pieces flat, right sides up, edges touching. Pick up the bar one "
-                    "whole stitch in from the edge, alternating sides, and pull the thread snug "
-                    "every few stitches. The seam disappears and stays flexible."
-                ),
-            },
-            {
-                "method": "Whipstitch",
-                "used_for": "sewing a stuffed piece onto the body" if stuffed
-                            else "setting in the sleeves",
-                "how": (
-                    "Hold the sleeve cap against the armhole, right sides together. Take the "
-                    "needle through both edge stitches at a slant, spacing the stitches evenly "
-                    "and easing any extra fabric as you go. Fast and firm."
-                ),
-            },
-            {
-                "method": "Invisible horizontal seam",
-                "used_for": "shoulder seams",
-                "how": (
-                    "Follow the path of a row of stitches across the join, taking the needle "
-                    "under one stitch on each side in turn. The seam reads as another row of "
-                    "fabric, which keeps the shoulder line clean."
-                ),
-            },
-            {
-                "method": "Slip stitch seam",
-                "used_for": "attaching the neckline band",
-                "how": (
-                    "Hold the pieces right sides together and slip stitch through both edges "
-                    "with a hook. Firm and flat, and quick to undo if you need to adjust."
-                ),
-            },
-        ],
+        "seaming": (
+            # A stuffed toy has no panels to mattress-stitch together; its
+            # pieces are whipstitched onto the body, and the assembly section
+            # already explains the order. Printing three pages of seaming
+            # technique for a neckline band that does not exist inflated every
+            # amigurumi from 14 pages to 27.
+            [
+                {
+                    "method": "Whipstitch",
+                    "used_for": "sewing each stuffed piece onto the body",
+                    "how": (
+                        "Hold the piece against the body where it belongs, with the opening "
+                        "facing the body. Take the needle through one stitch on the piece and "
+                        "one on the body, spacing evenly. Pull snug but not tight - the join "
+                        "should be firm without puckering."
+                    ),
+                },
+            ]
+            if stuffed else
+            [
+                {
+                    "method": "Mattress stitch",
+                    "used_for": "side seams and underarms",
+                    "how": (
+                        "Lay both pieces flat, right sides up, edges touching. Pick up the bar one "
+                        "whole stitch in from the edge, alternating sides, and pull the thread snug "
+                        "every few stitches. The seam disappears and stays flexible."
+                    ),
+                },
+                {
+                    "method": "Whipstitch",
+                    "used_for": "setting in the sleeves",
+                    "how": (
+                        "Hold the sleeve cap against the armhole, right sides together. Take the "
+                        "needle through both edge stitches at a slant, spacing the stitches evenly "
+                        "and easing any extra fabric as you go. Fast and firm."
+                    ),
+                },
+                {
+                    "method": "Invisible horizontal seam",
+                    "used_for": "shoulder seams",
+                    "how": (
+                        "Follow the path of a row of stitches across the join, taking the needle "
+                        "under one stitch on each side in turn. The seam reads as another row of "
+                        "fabric, which keeps the shoulder line clean."
+                    ),
+                },
+                {
+                    "method": "Slip stitch seam",
+                    "used_for": "attaching the neckline band",
+                    "how": (
+                        "Hold the pieces right sides together and slip stitch through both edges "
+                        "with a hook. Firm and flat, and quick to undo if you need to adjust."
+                    ),
+                },
+            ]
+        ),
         # The source's own finishing steps are the real assembly order for a
         # rebuild. Ours only applies to the panel skeleton.
         "assembly": (corpus.get("assembly_steps") or [])[:14] or [
@@ -594,54 +612,70 @@ def template_pattern(
                 ),
             }
         ),
-        "troubleshooting": [
-            {
-                "problem": "My piece is coming out wider than the pattern says",
-                "cause": "Your gauge is looser than the stated gauge",
-                "fix": "Go down a hook size and swatch again. Do not just work fewer stitches.",
-            },
-            {
-                "problem": "My stitch count keeps drifting",
-                "cause": "The turning chain is being counted, or missed, inconsistently",
-                "fix": (
-                    f"In this pattern the turning chain does not count as a stitch. Count at the "
-                    f"end of every row and compare with the stitch count table."
-                ),
-            },
-            {
-                "problem": "The edges are slanting instead of running straight",
-                "cause": "A stitch is being added or lost at the start or end of each row",
-                "fix": "Place a marker in the first and last stitch of each row and work into it.",
-            },
-            {
-                "problem": "The fabric is stiff and does not drape",
-                "cause": "The hook is too small for the yarn",
-                "fix": "Go up a hook size. The fabric should be firm but still fold softly.",
-            },
-            {
-                "problem": "There are gaps or holes between stitches",
-                "cause": "Uneven tension, or the hook going into the wrong part of the stitch",
-                "fix": "Work into both loops unless told otherwise, and keep the yarn tension even.",
-            },
-            {
-                "problem": "My seams are bulky and visible from the front",
-                "cause": "The seam is taking in too much of each edge",
-                "fix": "Use mattress stitch one stitch in from the edge and keep tension light.",
-            },
-            {
-                "problem": "The neckline is stretched out and floppy",
-                "cause": "Too many stitches were worked into the neckline edge",
-                "fix": "Rip back and work fewer stitches, or add a round of slip stitch to firm it.",
-            },
-            {
-                "problem": "I ran out of yarn before finishing",
-                "cause": "Dye lots and yardage vary between balls",
-                "fix": (
-                    "Check the yardage table and buy 10% extra. If you must change ball, "
-                    "join at a seam so the transition is hidden."
-                ),
-            },
-        ],
+        "troubleshooting": (
+            [
+                {
+                    "problem": "The stuffing is showing through the stitches",
+                    "cause": "Your gauge is too loose for a stuffed piece",
+                    "fix": "Go down a hook size. Stuffed pieces need a tight fabric.",
+                },
+                {
+                    "problem": "The shape looks lumpy after stuffing",
+                    "cause": "The filling is unevenly distributed",
+                    "fix": "Pull the stuffing apart into thin wisps before inserting it, "
+                           "and push it into the far end first with the blunt end of a hook.",
+                },
+            ]
+            if stuffed else
+            [
+                {
+                    "problem": "My piece is coming out wider than the pattern says",
+                    "cause": "Your gauge is looser than the stated gauge",
+                    "fix": "Go down a hook size and swatch again. Do not just work fewer stitches.",
+                },
+                {
+                    "problem": "My stitch count keeps drifting",
+                    "cause": "The turning chain is being counted, or missed, inconsistently",
+                    "fix": (
+                        f"In this pattern the turning chain does not count as a stitch. Count at the "
+                        f"end of every row and compare with the stitch count table."
+                    ),
+                },
+                {
+                    "problem": "The edges are slanting instead of running straight",
+                    "cause": "A stitch is being added or lost at the start or end of each row",
+                    "fix": "Place a marker in the first and last stitch of each row and work into it.",
+                },
+                {
+                    "problem": "The fabric is stiff and does not drape",
+                    "cause": "The hook is too small for the yarn",
+                    "fix": "Go up a hook size. The fabric should be firm but still fold softly.",
+                },
+                {
+                    "problem": "There are gaps or holes between stitches",
+                    "cause": "Uneven tension, or the hook going into the wrong part of the stitch",
+                    "fix": "Work into both loops unless told otherwise, and keep the yarn tension even.",
+                },
+                {
+                    "problem": "My seams are bulky and visible from the front",
+                    "cause": "The seam is taking in too much of each edge",
+                    "fix": "Use mattress stitch one stitch in from the edge and keep tension light.",
+                },
+                {
+                    "problem": "The neckline is stretched out and floppy",
+                    "cause": "Too many stitches were worked into the neckline edge",
+                    "fix": "Rip back and work fewer stitches, or add a round of slip stitch to firm it.",
+                },
+                {
+                    "problem": "I ran out of yarn before finishing",
+                    "cause": "Dye lots and yardage vary between balls",
+                    "fix": (
+                        "Check the yardage table and buy 10% extra. If you must change ball, "
+                        "join at a seam so the transition is hidden."
+                    ),
+                },
+            ]
+        ),
         "care": [
             "Hand wash in cool water with a mild wool wash.",
             "Do not wring. Press the water out and roll in a towel.",

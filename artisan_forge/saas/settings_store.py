@@ -72,6 +72,10 @@ FIELDS: tuple[Field, ...] = (
           placeholder="google-ai-studio/gemini-2.5-flash-image"),
     Field("AF_IMAGE_CACHE", "Cache generated art", "Models", choices=("", "1", "0"),
           help="1 reuses artwork for an identical prompt, which makes a rebuild free."),
+    Field("AF_AI_TIMEOUT", "Request timeout (seconds)", "Models",
+          help="How long to wait for the model to answer. A full pattern can take "
+               "2-4 minutes on a shared router. Default is 420.",
+          placeholder="420"),
 
     # ---- Etsy ----
     Field("ETSY_KEYSTRING", "Keystring", "Etsy", secret=True,

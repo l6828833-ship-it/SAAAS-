@@ -301,6 +301,15 @@ def _guess_garment(text: str) -> str:
     scores = {
         key: sum(low.count(word) for word in words) for key, words in GARMENT_WORDS.items()
     }
+    # Structural signal: if the headings name body parts (head, body, arms, legs,
+    # tail, ears, eyes, nose) then it is overwhelmingly likely to be an amigurumi,
+    # even if the word "amigurumi" never appears in the instruction text itself.
+    body_part_count = sum(
+        1 for word in ("head", "body", "arms", "legs", "tail", "ears", "eyes", "nose")
+        if re.search(rf"\b{word}\b", low)
+    )
+    if body_part_count >= 4:
+        scores["amigurumi"] = scores.get("amigurumi", 0) + body_part_count * 3
     best = max(scores, key=lambda k: scores[k])
     return best if scores[best] else ""
 

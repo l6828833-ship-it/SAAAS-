@@ -129,6 +129,7 @@ def art_direction_request(
     plate_count: int = 8,
     brand_note: str = "",
     variation: str = "",
+    source_title: str = "",
 ) -> str:
     """Design the piece and art-direct it, before a word of the pattern is written.
 
@@ -137,6 +138,16 @@ def art_direction_request(
     here is the design that gets written up.
     """
     wanted, shot_list = _shot_list(plate_count)
+    # The source title often names a character or specific design. Including it
+    # in the prompt ensures Gemini renders the actual subject (e.g. "Stitch" from
+    # Lilo & Stitch) rather than a generic amigurumi blob.
+    subject_line = ""
+    if source_title:
+        subject_line = (
+            f"The subject is called \"{source_title}\". Every photograph must clearly "
+            "show this specific character or design, not a generic version of the "
+            f"item type.\n"
+        )
     return (
         "You are designing a crochet product and art-directing its photography. "
         "The photographs are rendered first and then used as the visual reference "
@@ -150,6 +161,7 @@ def art_direction_request(
         "First decide the design: the silhouette, the stitch pattern, the yarn "
         "weight and fibre, and one colourway. Be specific and commit to it - "
         "every photograph must show the same object.\n"
+        + subject_line
         + (
             f"The item is a {garment}. Design a {garment} - do not substitute a "
             "different garment, however well it would photograph.\n"
@@ -306,6 +318,7 @@ def plan_art(
     brand_note: str = "",
     variation: str = "",
     temperature: float | None = None,
+    source_title: str = "",
 ) -> tuple[dict, list[dict], list[str]]:
     """The first model call: design the piece and write the photo prompts.
 
@@ -322,6 +335,7 @@ def plan_art(
             art_direction_request(
                 brief, garment, plate_count=plate_count,
                 brand_note=brand_note, variation=variation,
+                source_title=source_title,
             ),
             temperature=temperature,
         )

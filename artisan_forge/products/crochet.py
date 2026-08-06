@@ -40,6 +40,7 @@ from __future__ import annotations
 import dataclasses
 import datetime as dt
 import json
+import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -532,7 +533,16 @@ def listing_from_pattern(
     tags: list[str] = []
     # research-backed tags first: they are ranked by real search volume
     researched = report.best_tags(MAX_TAGS) if report and report.listings else []
-    candidates = list(raw.get("tags") or []) + researched + [
+    # Title words are the most important keywords for discoverability: a buyer
+    # searching for "Stitch amigurumi" needs to find this listing.
+    title_words = [
+        w.lower() for w in re.split(r"[\s|!?,.]+", str(pattern.get("title") or ""))
+        if len(w) > 2 and w.lower() not in ("the", "and", "for", "crochet", "pattern")
+    ]
+    title_tags = [
+        f"{w} crochet pattern" for w in title_words[:3]
+    ] + [" ".join(title_words[:4]).strip()]
+    candidates = list(raw.get("tags") or []) + researched + title_tags + [
         f"{garment} pattern",
         "crochet pattern",
         "pdf pattern",
@@ -982,6 +992,7 @@ def build_crochet(
         brand_note=brand_note,
         variation=spec.variant_direction,
         temperature=variant_heat,
+        source_title=str(fallback.get("title") or inputs.get("default_title") or ""),
     )
     result.warnings.extend(plan_warnings)
     # The art director may name the garment, but not over the top of the source.
@@ -1173,6 +1184,7 @@ def build_crochet(
                 market.listing_prompt(
                     pattern, market_report,
                     garment=garment, shop=spec.brand.shop,
+                    source_title=str(pattern.get("title") or ""),
                 )
             )
         except Exception as exc:  # noqa: BLE001 - keep the researched fallback
